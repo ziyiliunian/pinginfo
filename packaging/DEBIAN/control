@@ -2,7 +2,7 @@ Package: pinginfo
 Version: 1.0.1
 Section: net
 Priority: optional
-Architecture: any
+Architecture: all
 Depends: python3 (>= 3.8), python3-pyqt5 (>= 5.14)
 Recommends: iputils-ping
 Installed-Size: 2048

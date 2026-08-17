@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 
 APP_NAME="pinginfo"
 VERSION="${1:-1.0.1}"
-ARCH="any"
+ARCH="all"
 PKG="${APP_NAME}_${VERSION}_${ARCH}.deb"
 OUT_DIR="dist"
 PKGROOT="build/pkgroot"
