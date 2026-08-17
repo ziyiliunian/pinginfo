@@ -1,0 +1,289 @@
+# -*- coding: utf-8 -*-
+"""
+Ping 核心模块
+实现 ICMP Ping 和 TCP Ping 功能
+"""
+
+import subprocess
+import re
+import socket
+import time
+import platform
+import ipaddress
+from dataclasses import dataclass
+from typing import Optional, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+@dataclass
+class PingResult:
+    """单次 ping 的结果"""
+    success: bool
+    rtt: Optional[float] = None       # 响应时间（毫秒）
+    ttl: Optional[int] = None         # TTL 值
+    error: Optional[str] = None       # 错误信息
+
+
+def expand_ip_range(ip_str: str) -> List[str]:
+    """
+    展开 IP 范围为单独的 IP 列表
+    支持格式:
+      - 192.168.0.10-192.168.0.201  (完整范围)
+      - 192.168.0.10-201            (简写范围)
+      - 192.168.0.0/24              (CIDR)
+      - 192.168.0.1                 (单个IP)
+    """
+    ip_str = ip_str.strip()
+
+    # CIDR 格式: 192.168.0.0/24
+    if '/' in ip_str:
+        try:
+            net = ipaddress.ip_network(ip_str, strict=False)
+            return [str(ip) for ip in net.hosts()] or [str(net.network_address)]
+        except ValueError:
+            return [ip_str]
+
+    # 范围格式: 192.168.0.10-192.168.0.201 或 192.168.0.10-201
+    if '-' in ip_str:
+        parts = ip_str.split('-', 1)
+        start_str = parts[0].strip()
+        end_str = parts[1].strip()
+        # 简写格式: 192.168.0.10-201 -> 192.168.0.201
+        if '.' not in end_str and end_str.isdigit():
+            prefix = start_str.rsplit('.', 1)[0]
+            end_str = f"{prefix}.{end_str}"
+        try:
+            start = int(ipaddress.IPv4Address(start_str))
+            end = int(ipaddress.IPv4Address(end_str))
+            if start <= end:
+                count = end - start + 1
+                if count > 65535:
+                    return [ip_str]  # 范围过大，不展开
+                return [str(ipaddress.IPv4Address(i)) for i in range(start, end + 1)]
+        except (ValueError, ipaddress.AddressValueError):
+            pass
+        return [ip_str]
+
+    # 单个 IP 或域名
+    return [ip_str]
+
+
+def _parse_ping_output(output: str, is_windows: bool = False) -> PingResult:
+    """
+    解析系统 ping 命令的输出
+    支持 Linux 和 Windows 格式
+    """
+    if not output:
+        return PingResult(success=False, error="无输出")
+
+    # Linux 成功输出示例:
+    # 64 bytes from 8.8.8.8: icmp_seq=1 ttl=117 time=10.5 ms
+    # Windows 成功输出示例:
+    # Reply from 8.8.8.8: bytes=32 time=10ms TTL=117
+
+    # 检查是否成功
+    success_patterns = [
+        r'bytes from',           # Linux
+        r'Reply from',           # Windows
+        r'来自.*的回复',          # Windows 中文
+        r'bytes of data',        # Linux IPv6
+    ]
+
+    is_success = any(re.search(p, output, re.IGNORECASE) for p in success_patterns)
+
+    # 检查明确的失败标志
+    fail_patterns = [
+        r'100% packet loss',
+        r'100% 丢包',
+        r'Request timed out',
+        r'请求超时',
+        r'Destination Host Unreachable',
+        r'目标主机不可达',
+        r'Name or service not known',
+        r'unknown host',
+        r'Network is unreachable',
+        r'网络不可达',
+        r'connect: Network is unreachable',
+    ]
+
+    is_fail = any(re.search(p, output, re.IGNORECASE) for p in fail_patterns)
+
+    if is_fail or not is_success:
+        # 提取错误信息
+        for pattern in fail_patterns:
+            match = re.search(pattern, output, re.IGNORECASE)
+            if match:
+                return PingResult(success=False, error=match.group(0))
+        return PingResult(success=False, error="Ping 失败")
+
+    # 提取 RTT（响应时间）
+    rtt_match = re.search(r'time[=<]?([\d.]+)\s*ms', output, re.IGNORECASE)
+    if not rtt_match:
+        # 尝试匹配无单位的格式
+        rtt_match = re.search(r'time[=<]?([\d.]+)', output, re.IGNORECASE)
+
+    rtt = None
+    if rtt_match:
+        try:
+            rtt = float(rtt_match.group(1))
+        except ValueError:
+            pass
+
+    # 提取 TTL
+    ttl_match = re.search(r'ttl[=<]?(\d+)', output, re.IGNORECASE)
+    ttl = None
+    if ttl_match:
+        try:
+            ttl = int(ttl_match.group(1))
+        except ValueError:
+            pass
+
+    return PingResult(success=True, rtt=rtt, ttl=ttl)
+
+
+def icmp_ping(host: str, timeout: int = 3, packet_size: int = 56, ttl: int = 0) -> PingResult:
+    """
+    使用系统 ping 命令进行 ICMP Ping
+    支持 IPv4 和 IPv6，自动检测
+    packet_size: ICMP 包大小（字节），默认 56
+    ttl: TTL 起始值，0 表示使用系统默认
+    """
+    is_win = platform.system() == "Windows"
+
+    if is_win:
+        cmd = ['ping', '-n', '1', '-w', str(timeout * 1000)]
+        if packet_size != 56:
+            cmd.extend(['-l', str(packet_size)])
+        if ttl > 0:
+            cmd.extend(['-i', str(ttl)])
+        cmd.append(host)
+    else:
+        # Linux: -c 1 发送1个包, -W 超时(秒), -s 包大小, -t TTL
+        cmd = ['ping', '-c', '1', '-W', str(timeout)]
+        if packet_size != 56:
+            cmd.extend(['-s', str(packet_size)])
+        if ttl > 0:
+            cmd.extend(['-t', str(ttl)])
+        cmd.append(host)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout + 5
+        )
+        output = result.stdout + result.stderr
+        return _parse_ping_output(output, is_win)
+    except subprocess.TimeoutExpired:
+        return PingResult(success=False, error="命令超时")
+    except FileNotFoundError:
+        return PingResult(success=False, error="ping 命令未找到")
+    except Exception as e:
+        return PingResult(success=False, error=str(e))
+
+
+def tcp_ping(host: str, port: int, timeout: int = 3) -> PingResult:
+    """
+    TCP Ping - 测试目标端口的 TCP 连接
+    支持 IPv4 和 IPv6
+    """
+    start_time = time.time()
+    sock = None
+    try:
+        # create_connection 自动处理 IPv4/IPv6
+        sock = socket.create_connection((host, port), timeout=timeout)
+        rtt = (time.time() - start_time) * 1000
+        sock.close()
+        return PingResult(success=True, rtt=round(rtt, 2))
+    except socket.timeout:
+        return PingResult(success=False, error="连接超时")
+    except ConnectionRefusedError:
+        # 连接被拒绝说明主机可达但端口未开放
+        rtt = (time.time() - start_time) * 1000
+        return PingResult(success=False, error="连接被拒绝", rtt=round(rtt, 2))
+    except socket.gaierror as e:
+        return PingResult(success=False, error=f"域名解析失败: {e}")
+    except OSError as e:
+        return PingResult(success=False, error=str(e))
+    finally:
+        if sock:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
+def resolve_hostname(ip: str) -> str:
+    """尝试反向解析主机名"""
+    try:
+        result = socket.gethostbyaddr(ip)
+        return result[0]
+    except (socket.herror, socket.gaierror):
+        return ip
+
+
+def is_ip_address(address: str) -> bool:
+    """判断字符串是否为合法 IPv4 地址"""
+    try:
+        ipaddress.IPv4Address(address)
+        return True
+    except (ValueError, ipaddress.AddressValueError):
+        return False
+
+
+def resolve_to_ipv4(address: str, timeout: float = 2.0) -> Optional[str]:
+    """
+    将域名解析为 IPv4 地址。
+    - 如果 address 是合法 IPv4，直接返回 None（无需解析）
+    - 如果是域名，返回解析得到的 IPv4 字符串；解析失败时返回 None
+    """
+    if is_ip_address(address):
+        return None
+    try:
+        # socket.gethostbyname 仅返回 IPv4，且自带超时控制较弱，
+        # 通过 getaddrinfo 限定 family=AF_INET 以确保只取 IPv4 结果
+        infos = socket.getaddrinfo(address, None, socket.AF_INET, socket.SOCK_STREAM)
+        for info in infos:
+            ip = info[4][0]
+            if is_ip_address(ip):
+                return ip
+    except (socket.gaierror, socket.herror, TimeoutError, Exception):
+        return None
+    return None
+
+
+def ping_target(stats, timeout: int = 3, packet_size: int = 56, ttl: int = 0) -> PingResult:
+    """
+    对一个 TargetStats 对象执行 ping 操作
+    根据 ping_mode 选择 ICMP 或 TCP
+    """
+    if stats.ping_mode == "TCP":
+        return tcp_ping(stats.address, stats.tcp_port, timeout=timeout)
+    else:
+        return icmp_ping(stats.address, timeout=timeout, packet_size=packet_size, ttl=ttl)
+
+
+def ping_batch(targets, max_workers: int = 500, timeout: int = 3,
+               packet_size: int = 56, ttl: int = 0):
+    """
+    批量并发 ping 多个目标
+    返回 (target, PingResult) 的列表
+    """
+    results = []
+    if not targets:
+        return results
+
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(targets))) as executor:
+        future_to_target = {
+            executor.submit(ping_target, t, timeout, packet_size, ttl): t for t in targets
+        }
+        for future in as_completed(future_to_target):
+            target = future_to_target[future]
+            try:
+                result = future.result()
+            except Exception as e:
+                result = PingResult(success=False, error=str(e))
+            results.append((target, result))
+
+    return results

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=PingInfo
+Name[zh_CN]=PingInfo 批量Ping监控
+Comment=Batch Ping and real-time monitoring tool
+Comment[zh_CN]=批量Ping与实时监控工具
+Exec=pinginfo
+Icon=pinginfo
+Terminal=false
+Type=Application
+Categories=Network;Monitor;Utility;
+StartupNotify=true

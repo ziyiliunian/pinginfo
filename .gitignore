@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.venv/
+venv/
+*.spec.bak
+
+# 构建产物
+build/
+dist/
+*.spec.backup
+
+# AppImage 打包输出（体积大，按需手动上传 Release）
+PingInfo-*.AppImage
+PingInfo-*.tar.gz
+
+# 系统 / 编辑器
+.DS_Store
+*.swp
+.idea/
+.vscode/
