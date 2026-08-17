@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+# PingInfo 启动器
+import sys
+import os
+
+# 程序安装目录（打包后位于 /usr/share/pinginfo）
+APP_DIR = "/usr/share/pinginfo"
+if os.path.isdir(APP_DIR) and APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
+
+if __name__ == "__main__":
+    from main import main
+    main()

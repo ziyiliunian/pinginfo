@@ -1,0 +1,13 @@
+Package: pinginfo
+Version: 1.0.0
+Section: net
+Priority: optional
+Architecture: amd64
+Depends: python3 (>= 3.8), python3-pyqt5
+Recommends: python3-pip
+Installed-Size: 2048
+Maintainer: PingInfo <pinginfo@example.com>
+Homepage: https://github.com/yourname/pinginfo
+Description: 批量 Ping 与实时监控工具
+ 一款类似 PingInfoView 的批量 Ping 监控软件，支持 ICMP/TCP Ping、
+ IPv4/IPv6、实时统计（响应时间、丢包率、TTL、MAC 地址）以及多格式结果导出。

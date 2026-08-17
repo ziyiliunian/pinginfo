@@ -29,11 +29,13 @@
 
 ## 使用方法
 
-### 直接运行 AppImage
+### 安装 deb 包
 ```bash
-chmod +x PingInfo-x86_64.AppImage
-./PingInfo-x86_64.AppImage
+sudo dpkg -i PingInfo_1.0.0_amd64.deb
+# 若提示依赖未满足，执行：
+sudo apt-get install -f
 ```
+安装后在应用菜单搜索 "PingInfo" 即可启动，或在终端运行 `pinginfo`。
 
 ### 从源码运行
 ```bash
@@ -72,13 +74,21 @@ pinginfo/
 │   ├── ping_core.py      # Ping 核心模块
 │   ├── arp_lookup.py     # MAC 地址查询
 │   ├── exporters.py      # 结果导出
-│   └── pinginfo.desktop  # Desktop 文件
 ├── build/                # 构建中间文件
-├── dist/                 # PyInstaller 输出
-├── build.sh              # 打包脚本
+├── packaging/            # deb 打包配置文件（control / desktop / 图标等）
+├── build.sh              # deb 打包脚本
 ├── requirements.txt      # 依赖
 ├── IP.txt                # 示例地址文件
-└── PingInfo-x86_64.AppImage  # 打包后的 AppImage
+└── pinginfo_1.0.0_amd64.deb  # 打包后的 deb 安装包
+```
+
+## 打包为 deb
+
+详见 `packaging/README.md`，或直接运行：
+
+```bash
+./build.sh
+sudo dpkg -i pinginfo_1.0.0_amd64.deb
 ```
 
 ## 技术栈
@@ -86,5 +96,4 @@ pinginfo/
 - PyQt5 (GUI)
 - 系统命令 ping (ICMP)
 - socket (TCP Ping)
-- PyInstaller (打包)
-- AppImageKit (AppImage 构建)
+- dpkg-deb (deb 打包)
