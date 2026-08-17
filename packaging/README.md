@@ -21,8 +21,8 @@ packaging/
 └── README.md          # 本文件
 ```
 
-> 注意：`packaging/usr/share/pinginfo/` 目录下的 Python 源码由 `build.sh`
-> 在打包时自动复制生成，不需手工维护。
+> 注意：`packaging/opt/pinginfo/` 目录下的 Python 源码由 `build.sh`
+> 在打包时自动复制生成，不需手工维护。程序安装后位于 `/opt/pinginfo`。
 
 ## 依赖
 
@@ -34,8 +34,8 @@ packaging/
 
 ```bash
 # 1. 复制源码到打包目录
-mkdir -p packaging/usr/share/pinginfo
-cp -r src/*.py packaging/usr/share/pinginfo/
+mkdir -p packaging/opt/pinginfo/src
+cp -r src/* packaging/opt/pinginfo/src/
 
 # 2. 设置脚本权限
 chmod 755 packaging/DEBIAN/postinst packaging/DEBIAN/postrm

@@ -59,6 +59,17 @@ class PingWorker(QThread):
         self._stop = True
 
 
+class NumericTableWidgetItem(QTableWidgetItem):
+    """按真实数值排序的单元格。缺失值（UserRole 为 None）排在最后。"""
+    def __lt__(self, other):
+        INF = float("inf")
+        a = self.data(Qt.UserRole)
+        b = other.data(Qt.UserRole) if other is not None else None
+        a = INF if a is None else a
+        b = INF if b is None else b
+        return a < b
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -393,14 +404,14 @@ class MainWindow(QMainWindow):
             item.setForeground(QColor("#f44336"))
         elif st == "等待中":
             item.setForeground(QColor("#FF9800"))
-        self._c(row, 5, f"{s.last_rtt:.2f}" if s.last_rtt is not None else "-")    # 响应时间
-        self._c(row, 6, f"{s.loss_rate:.1f}")                              # 丢包率
-        self._c(row, 7, str(s.success_count))                             # 成功
-        self._c(row, 8, str(s.fail_count))                                # 失败
-        self._c(row, 9, f"{s.avg_rtt:.2f}" if s.avg_rtt is not None else "-")     # 平均
-        self._c(row, 10, f"{s.min_rtt:.2f}" if s.min_rtt is not None else "-")    # 最小
-        self._c(row, 11, f"{s.max_rtt:.2f}" if s.max_rtt is not None else "-")    # 最大
-        self._c(row, 12, str(s.last_ttl) if s.last_ttl is not None else "-")      # TTL
+        self._nc(row, 5, f"{s.last_rtt:.2f}" if s.last_rtt is not None else "-", s.last_rtt)    # 响应时间
+        self._nc(row, 6, f"{s.loss_rate:.1f}", s.loss_rate)                              # 丢包率
+        self._nc(row, 7, str(s.success_count), s.success_count)                         # 成功
+        self._nc(row, 8, str(s.fail_count), s.fail_count)                              # 失败
+        self._nc(row, 9, f"{s.avg_rtt:.2f}" if s.avg_rtt is not None else "-", s.avg_rtt)     # 平均
+        self._nc(row, 10, f"{s.min_rtt:.2f}" if s.min_rtt is not None else "-", s.min_rtt)    # 最小
+        self._nc(row, 11, f"{s.max_rtt:.2f}" if s.max_rtt is not None else "-", s.max_rtt)    # 最大
+        self._nc(row, 12, str(s.last_ttl) if s.last_ttl is not None else "-", s.last_ttl)      # TTL
         self._c(row, 13, s.last_success_time or "-")                      # 最近成功时间
         self._c(row, 14, s.last_fail_time or "-")                         # 最近失败时间
         self._c(row, 15, s.mac_address or "-")                            # MAC地址
@@ -418,6 +429,17 @@ class MainWindow(QMainWindow):
             item = QTableWidgetItem(text); self.table.setItem(row, col, item)
         else:
             item.setText(text)
+        return item
+
+    def _nc(self, row, col, text, value):
+        """数值单元格：显示文本 text，按真实数值 value 排序（缺失值排末尾）"""
+        item = self.table.item(row, col)
+        if item is None or not isinstance(item, NumericTableWidgetItem):
+            item = NumericTableWidgetItem(text)
+            self.table.setItem(row, col, item)
+        else:
+            item.setText(text)
+        item.setData(Qt.UserRole, value)
         return item
 
     def update_count(self):

@@ -7,8 +7,8 @@ set -e
 cd "$(dirname "$0")"
 
 APP_NAME="pinginfo"
-VERSION="${1:-1.0}"
-ARCH="amd64"
+VERSION="${1:-1.0.1}"
+ARCH="any"
 PKG="${APP_NAME}_${VERSION}_${ARCH}.deb"
 OUT_DIR="dist"
 PKGROOT="build/pkgroot"
@@ -28,9 +28,9 @@ mkdir -p "$PKGROOT"
 # 以 packaging/ 为骨架复制到构建根
 cp -r packaging/* "$PKGROOT/"
 
-# 复制源码（保持 src/ 包结构，启动器通过 /usr/share/pinginfo/src 导入）
-mkdir -p "$PKGROOT/usr/share/${APP_NAME}"
-cp -r src "$PKGROOT/usr/share/${APP_NAME}/src"
+# 复制源码（保持 src/ 包结构，启动器通过 /opt/pinginfo/src 导入）
+mkdir -p "$PKGROOT/opt/${APP_NAME}"
+cp -r src "$PKGROOT/opt/${APP_NAME}/src"
 
 # 生成图标（若缺失）
 ICON="$PKGROOT/usr/share/icons/hicolor/256x256/apps/${APP_NAME}.png"
@@ -63,7 +63,7 @@ chmod 644 "$ICON"
 
 # 写入版本号并自动计算 Installed-Size（KB，向上取整）
 sed -i "s/^Version:.*/Version: ${VERSION}/" "$PKGROOT/DEBIAN/control"
-SIZE_KB=$(du -sk "$PKGROOT/usr" | cut -f1)
+SIZE_KB=$(du -sk "$PKGROOT/opt" | cut -f1)
 sed -i "s/^Installed-Size:.*/Installed-Size: ${SIZE_KB}/" "$PKGROOT/DEBIAN/control"
 
 # 构建 deb（保持 root 拥有者）
