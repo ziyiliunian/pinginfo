@@ -473,8 +473,9 @@ class MainWindow(QMainWindow):
                 f"超时={self.ping_timeout}s, 包大小={self.packet_size}, TTL={self.icmp_ttl}")
 
     def show_about(self):
+        from . import __version__
         QMessageBox.about(self, "关于 PingInfo",
-            "<h2>PingInfo v1.0.0</h2><p>批量 Ping 与实时监控工具</p>"
+            f"<h2>PingInfo v{__version__}</h2><p>批量 Ping 与实时监控工具</p>"
             "<ul><li>支持 ICMP Ping 和 TCP Ping</li><li>支持 IPv4 / IPv6</li>"
             "<li>批量目标管理和实时监控</li><li>响应时间、丢包率、延迟统计</li>"
             "<li>TTL、MAC 地址查询</li><li>导出 TXT / CSV / HTML / XML</li></ul>"

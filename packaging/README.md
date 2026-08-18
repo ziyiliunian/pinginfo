@@ -42,7 +42,7 @@ chmod 755 packaging/DEBIAN/postinst packaging/DEBIAN/postrm
 chmod 755 packaging/usr/bin/pinginfo
 
 # 3. 构建 deb（需 dpkg-dev）
-dpkg-deb --build --root-owner-group packaging PingInfo_1.0.0_amd64.deb
+dpkg-deb --build --root-owner-group packaging pinginfo_1.0.2_all.deb
 ```
 
 或直接运行根目录的 `build.sh` 一键完成以上步骤。
@@ -50,7 +50,7 @@ dpkg-deb --build --root-owner-group packaging PingInfo_1.0.0_amd64.deb
 ## 安装与卸载
 
 ```bash
-sudo dpkg -i PingInfo_1.0.0_amd64.deb
+sudo dpkg -i pinginfo_1.0.2_all.deb
 sudo apt-get install -f   # 若依赖未满足，自动修复
 
 # 卸载
