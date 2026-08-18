@@ -9,3 +9,4 @@ Terminal=false
 Type=Application
 Categories=Network;Monitor;Utility;
 StartupNotify=true
+StartupWMClass=pinginfo

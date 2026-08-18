@@ -2,7 +2,7 @@
 # 安装后脚本：编译 Python 字节码并刷新桌面数据库
 set -e
 
-APP_DIR="/usr/share/pinginfo"
+APP_DIR="/opt/pinginfo"
 
 # 编译 .pyc 以加快首次启动
 if command -v python3 >/dev/null 2>&1; then

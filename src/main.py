@@ -36,6 +36,8 @@ def main():
     app.setApplicationName("PingInfo")
     app.setApplicationDisplayName("PingInfo")
     app.setOrganizationName("PingInfo")
+    # 关键：关联桌面文件，让窗口管理器正确匹配任务栏图标
+    app.setDesktopFileName("pinginfo")
     # 设置窗口/任务栏图标
     app_icon = _load_app_icon()
     if not app_icon.isNull():
@@ -44,6 +46,8 @@ def main():
     app.setFont(font)
     app.setStyle("Fusion")
     window = MainWindow()
+    if not app_icon.isNull():
+        window.setWindowIcon(app_icon)
     window.show()
     sys.exit(app.exec_())
 
