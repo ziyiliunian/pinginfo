@@ -4,7 +4,7 @@
 import sys
 import os
 
-# 程序安装根目录（打包后位于 /opt/pinginfo）
+# 程序安装根目录（打包后位于 /opt/pinginfo/src）
 BASE_DIR = "/opt/pinginfo"
 if os.path.isdir(BASE_DIR) and BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
