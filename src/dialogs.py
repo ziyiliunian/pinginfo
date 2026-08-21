@@ -80,6 +80,9 @@ class AddTargetsDialog(QDialog):
         input_group = QGroupBox("目标地址 (每行一个，支持 IP 范围和 CIDR)")
         input_layout = QVBoxLayout()
         self.text_edit = ChineseTextEdit()
+        # 不换行：长 IP/域名超宽时显示水平滚动条，保证每行一个目标
+        self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
+        self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.text_edit.setPlaceholderText(
             "支持以下格式:\n"
             "192.168.1.1\n"

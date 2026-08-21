@@ -175,17 +175,21 @@ class MainWindow(QMainWindow):
         self.progress.setVisible(False); self.status_bar.addPermanentWidget(self.progress)
 
     def add_targets(self, target_list):
+        # 用集合做 O(1) 去重，避免大量添加时 O(n^2)
+        existing = {(t.address, t.ping_mode) for t in self.targets}
         added = []
         for host, mode, port in target_list:
-            if any(t.address == host and t.ping_mode == mode for t in self.targets):
+            if (host, mode) in existing:
                 continue
             t = TargetStats(address=host, ping_mode=mode, tcp_port=port)
             self.targets.append(t)
+            existing.add((host, mode))
             added.append(t)
+        if not added:
+            return
         self.refresh_table(); self.update_count()
         # 异步解析域名 -> IPv4
-        if added:
-            self._resolve_targets_async(added)
+        self._resolve_targets_async(added)
 
     def _resolve_targets_async(self, targets):
         """并行解析域名对应的 IPv4 地址，完成后刷新表格"""
@@ -387,11 +391,13 @@ class MainWindow(QMainWindow):
         self.table.blockSignals(False)
 
     def _set_row(self, row, s):
-        # 第0列：复选框
-        cb_item = QTableWidgetItem()
-        cb_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+        # 第0列：复选框（复用已有 item，避免每次刷新都新建）
+        cb_item = self.table.item(row, 0)
+        if cb_item is None:
+            cb_item = QTableWidgetItem()
+            cb_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            self.table.setItem(row, 0, cb_item)
         cb_item.setCheckState(Qt.Checked if s.selected else Qt.Unchecked)
-        self.table.setItem(row, 0, cb_item)
         # 第1列起：数据
         self._c(row, 1, str(row + 1))                                   # 序号
         self._c(row, 2, s.address)                                        # 地址
@@ -424,22 +430,26 @@ class MainWindow(QMainWindow):
                     it.setForeground(QColor("#999999"))
 
     def _c(self, row, col, text):
+        """文本单元格：仅在内容变化时更新，减少重绘开销"""
         item = self.table.item(row, col)
         if item is None:
             item = QTableWidgetItem(text); self.table.setItem(row, col, item)
-        else:
+        elif item.text() != text:
             item.setText(text)
         return item
 
     def _nc(self, row, col, text, value):
-        """数值单元格：显示文本 text，按真实数值 value 排序（缺失值排末尾）"""
+        """数值单元格：显示文本 text，按真实数值 value 排序（缺失值排末尾）。仅在变化时更新"""
         item = self.table.item(row, col)
         if item is None or not isinstance(item, NumericTableWidgetItem):
             item = NumericTableWidgetItem(text)
             self.table.setItem(row, col, item)
+            item.setData(Qt.UserRole, value)
         else:
-            item.setText(text)
-        item.setData(Qt.UserRole, value)
+            if item.text() != text:
+                item.setText(text)
+            if item.data(Qt.UserRole) != value:
+                item.setData(Qt.UserRole, value)
         return item
 
     def update_count(self):
