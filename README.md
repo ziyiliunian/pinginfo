@@ -97,3 +97,15 @@ sudo dpkg -i dist/pinginfo_1.1.2_all.deb
 - 系统命令 ping (ICMP)
 - socket (TCP Ping)
 - dpkg-deb (deb 打包)
+
+## 修改记录
+
+详见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 作者与联系方式
+
+- 作者：ziyiliunian
+- 邮箱：316878142@qq.com
+- 项目地址：https://github.com/ziyiliunian/pinginfo
+
+欢迎通过邮件或 GitHub Issues 交流反馈问题与建议。
