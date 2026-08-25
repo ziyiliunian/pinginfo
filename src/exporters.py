@@ -5,6 +5,7 @@
 """
 
 import csv
+import html
 import os
 import time
 from xml.etree import ElementTree as ET
@@ -110,7 +111,7 @@ def export_html(stats_list, filepath: str) -> bool:
                 css_class = "waiting"
             parts.append(f'<tr class="{css_class}">')
             for key, _ in EXPORT_COLUMNS:
-                value = str(data.get(key, ""))
+                value = html.escape(str(data.get(key, "")))
                 parts.append(f"<td>{value}</td>")
             parts.append("</tr>")
 

@@ -62,16 +62,17 @@ class TargetStats:
             return "运行中"
         return "已停止"
 
-    def update_success(self, rtt: float, ttl: Optional[int] = None):
-        """更新成功结果"""
+    def update_success(self, rtt: Optional[float], ttl: Optional[int] = None):
+        """更新成功结果。rtt 为 None 时（如解析失败）仅计数，不参与统计运算"""
         self.total_count += 1
         self.success_count += 1
         self.last_rtt = rtt
-        self.sum_rtt += rtt
-        if self.min_rtt is None or rtt < self.min_rtt:
-            self.min_rtt = rtt
-        if self.max_rtt is None or rtt > self.max_rtt:
-            self.max_rtt = rtt
+        if rtt is not None:
+            self.sum_rtt += rtt
+            if self.min_rtt is None or rtt < self.min_rtt:
+                self.min_rtt = rtt
+            if self.max_rtt is None or rtt > self.max_rtt:
+                self.max_rtt = rtt
         if ttl is not None:
             self.last_ttl = ttl
         self.last_success_time = time.strftime("%Y-%m-%d %H:%M:%S")

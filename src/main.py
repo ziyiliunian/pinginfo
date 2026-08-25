@@ -18,10 +18,9 @@ def _load_app_icon():
     icon = QIcon.fromTheme("pinginfo")
     if not icon.isNull():
         return icon
-    # 回退路径：安装后位于 /opt/pinginfo，开发时在仓库根目录
+    # 回退路径：图标实际安装到 /usr/share/icons，开发时在仓库根目录
     candidates = [
-        "/opt/pinginfo/usr/share/icons/hicolor/256x256/apps/pinginfo.png",
-        "/opt/pinginfo/icons/pinginfo.png",
+        "/usr/share/icons/hicolor/256x256/apps/pinginfo.png",
         os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                      "packaging/usr/share/icons/hicolor/256x256/apps/pinginfo.png"),
     ]

@@ -24,6 +24,10 @@ class PingResult:
     error: Optional[str] = None       # 错误信息
 
 
+# 单次展开的最大 IP 数量上限，防止 CIDR/范围展开耗尽内存
+MAX_EXPAND_COUNT = 65535
+
+
 def expand_ip_range(ip_str: str) -> List[str]:
     """
     展开 IP 范围为单独的 IP 列表
@@ -32,6 +36,7 @@ def expand_ip_range(ip_str: str) -> List[str]:
       - 192.168.0.10-201            (简写范围)
       - 192.168.0.0/24              (CIDR)
       - 192.168.0.1                 (单个IP)
+    超过 MAX_EXPAND_COUNT 时不展开，原样返回，避免内存耗尽/界面卡死。
     """
     ip_str = ip_str.strip()
 
@@ -39,6 +44,8 @@ def expand_ip_range(ip_str: str) -> List[str]:
     if '/' in ip_str:
         try:
             net = ipaddress.ip_network(ip_str, strict=False)
+            if net.num_addresses > MAX_EXPAND_COUNT:
+                return [ip_str]  # 规模过大，不展开
             return [str(ip) for ip in net.hosts()] or [str(net.network_address)]
         except ValueError:
             return [ip_str]
@@ -57,7 +64,7 @@ def expand_ip_range(ip_str: str) -> List[str]:
             end = int(ipaddress.IPv4Address(end_str))
             if start <= end:
                 count = end - start + 1
-                if count > 65535:
+                if count > MAX_EXPAND_COUNT:
                     return [ip_str]  # 范围过大，不展开
                 return [str(ipaddress.IPv4Address(i)) for i in range(start, end + 1)]
         except (ValueError, ipaddress.AddressValueError):
@@ -116,27 +123,33 @@ def _parse_ping_output(output: str, is_windows: bool = False) -> PingResult:
                 return PingResult(success=False, error=match.group(0))
         return PingResult(success=False, error="Ping 失败")
 
-    # 提取 RTT（响应时间）
-    rtt_match = re.search(r'time[=<]?([\d.]+)\s*ms', output, re.IGNORECASE)
-    if not rtt_match:
-        # 尝试匹配无单位的格式
-        rtt_match = re.search(r'time[=<]?([\d.]+)', output, re.IGNORECASE)
-
+    # 提取 RTT（响应时间），兼容英文 "time=10.5 ms" 与中文 Windows "时间=10ms"/"时间<1ms"
+    rtt_patterns = [
+        r'time[=<]\s*([\d.]+)\s*ms',   # time=10ms / time<1ms
+        r'时间[=<]\s*([\d.]+)\s*ms',    # 时间=10ms / 时间<1ms
+        r'time[=<]\s*([\d.]+)',        # 无单位
+        r'时间[=<]\s*([\d.]+)',
+    ]
     rtt = None
-    if rtt_match:
-        try:
-            rtt = float(rtt_match.group(1))
-        except ValueError:
-            pass
+    for p in rtt_patterns:
+        m = re.search(p, output, re.IGNORECASE)
+        if m:
+            try:
+                rtt = float(m.group(1))
+                break
+            except ValueError:
+                pass
 
-    # 提取 TTL
-    ttl_match = re.search(r'ttl[=<]?(\d+)', output, re.IGNORECASE)
+    # 提取 TTL，兼容英文/中文（中文 Windows 通常仍输出 TTL=）
     ttl = None
-    if ttl_match:
-        try:
-            ttl = int(ttl_match.group(1))
-        except ValueError:
-            pass
+    for p in (r'ttl[=<]?\s*(\d+)',):
+        m = re.search(p, output, re.IGNORECASE)
+        if m:
+            try:
+                ttl = int(m.group(1))
+                break
+            except ValueError:
+                pass
 
     return PingResult(success=True, rtt=rtt, ttl=ttl)
 
@@ -149,10 +162,12 @@ def icmp_ping(host: str, timeout: int = 3, packet_size: int = 56, ttl: int = 0) 
     ttl: TTL 起始值，0 表示使用系统默认
     """
     is_win = platform.system() == "Windows"
+    # packet_size: 0 或 56 均表示使用系统默认，不传 -s/-l 参数
+    use_default_size = packet_size in (0, 56)
 
     if is_win:
         cmd = ['ping', '-n', '1', '-w', str(timeout * 1000)]
-        if packet_size != 56:
+        if not use_default_size:
             cmd.extend(['-l', str(packet_size)])
         if ttl > 0:
             cmd.extend(['-i', str(ttl)])
@@ -160,7 +175,7 @@ def icmp_ping(host: str, timeout: int = 3, packet_size: int = 56, ttl: int = 0) 
     else:
         # Linux: -c 1 发送1个包, -W 超时(秒), -s 包大小, -t TTL
         cmd = ['ping', '-c', '1', '-W', str(timeout)]
-        if packet_size != 56:
+        if not use_default_size:
             cmd.extend(['-s', str(packet_size)])
         if ttl > 0:
             cmd.extend(['-t', str(ttl)])
@@ -195,6 +210,7 @@ def tcp_ping(host: str, port: int, timeout: int = 3) -> PingResult:
         sock = socket.create_connection((host, port), timeout=timeout)
         rtt = (time.time() - start_time) * 1000
         sock.close()
+        sock = None  # 置 None，避免 finally 中重复 close
         return PingResult(success=True, rtt=round(rtt, 2))
     except socket.timeout:
         return PingResult(success=False, error="连接超时")
@@ -248,7 +264,8 @@ def resolve_to_ipv4(address: str, timeout: float = 2.0) -> Optional[str]:
             ip = info[4][0]
             if is_ip_address(ip):
                 return ip
-    except (socket.gaierror, socket.herror, TimeoutError, Exception):
+    except Exception:
+        # gaierror/herror/TimeoutError 等均为 Exception 子类，统一兜底返回 None
         return None
     return None
 

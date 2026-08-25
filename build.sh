@@ -1,13 +1,13 @@
 #!/bin/bash
 # PingInfo Debian 打包脚本
 # 用法: ./build.sh [版本号]
-#   默认版本 1.1.0；可传参覆盖，如 ./build.sh 1.1.1
+#   默认版本 1.1.2；可传参覆盖，如 ./build.sh 1.1.3
 set -e
 
 cd "$(dirname "$0")"
 
 APP_NAME="pinginfo"
-VERSION="${1:-1.1.0}"
+VERSION="${1:-1.1.2}"
 ARCH="all"
 PKG="${APP_NAME}_${VERSION}_${ARCH}.deb"
 OUT_DIR="dist"
@@ -102,7 +102,7 @@ chmod 644 "$ICON"
 
 # 写入版本号并自动计算 Installed-Size（KB，向上取整）
 sed -i "s/^Version:.*/Version: ${VERSION}/" "$PKGROOT/DEBIAN/control"
-SIZE_KB=$(du -sk "$PKGROOT/opt" | cut -f1)
+SIZE_KB=$(du -sk "$PKGROOT/opt" "$PKGROOT/usr" 2>/dev/null | awk '{s+=$1} END {print s}')
 sed -i "s/^Installed-Size:.*/Installed-Size: ${SIZE_KB}/" "$PKGROOT/DEBIAN/control"
 
 # 构建 deb（保持 root 拥有者）
