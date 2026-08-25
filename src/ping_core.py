@@ -248,12 +248,42 @@ def is_ip_address(address: str) -> bool:
         return False
 
 
+def normalize_host(line: str) -> str:
+    """
+    规范化用户输入的目标地址：
+    - 去除首尾空白
+    - 去除协议前缀（http://、https://、ftp://）
+    - 去除 URL 路径与尾部斜杠（保留 host:port、CIDR 写法）
+    例: "http://www.example.com/index.html" -> "www.example.com"
+        "www.example.com/" -> "www.example.com"
+        "192.168.0.0/24"  -> "192.168.0.0/24"（CIDR 保留）
+    """
+    s = line.strip()
+    lowered = s.lower()
+    for scheme in ("http://", "https://", "ftp://"):
+        if lowered.startswith(scheme):
+            s = s[len(scheme):]
+            break
+    else:
+        # 无协议前缀：仅当斜杠部分不是 CIDR（host 非 IP 或掩码非数字）时才去掉路径
+        if '/' in s:
+            head, _, tail = s.partition('/')
+            if not (tail.isdigit() and is_ip_address(head)):
+                s = head
+        return s
+    # 有协议前缀：去掉路径部分
+    if '/' in s:
+        s = s.split('/', 1)[0]
+    return s
+
+
 def resolve_to_ipv4(address: str, timeout: float = 2.0) -> Optional[str]:
     """
     将域名解析为 IPv4 地址。
     - 如果 address 是合法 IPv4，直接返回 None（无需解析）
     - 如果是域名，返回解析得到的 IPv4 字符串；解析失败时返回 None
     """
+    address = normalize_host(address)
     if is_ip_address(address):
         return None
     try:

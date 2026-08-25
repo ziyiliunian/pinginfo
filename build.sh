@@ -1,13 +1,13 @@
 #!/bin/bash
 # PingInfo Debian 打包脚本
 # 用法: ./build.sh [版本号]
-#   默认版本 1.1.2；可传参覆盖，如 ./build.sh 1.1.3
+#   默认版本 1.1.3；可传参覆盖，如 ./build.sh 1.1.4
 set -e
 
 cd "$(dirname "$0")"
 
 APP_NAME="pinginfo"
-VERSION="${1:-1.1.2}"
+VERSION="${1:-1.1.3}"
 ARCH="all"
 PKG="${APP_NAME}_${VERSION}_${ARCH}.deb"
 OUT_DIR="dist"

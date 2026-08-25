@@ -9,7 +9,8 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 from PyQt5.QtGui import QColor, QDragEnterEvent, QDropEvent
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .data_models import TargetStats
-from .ping_core import ping_batch, resolve_to_ipv4, is_ip_address, expand_ip_range
+from .ping_core import (ping_batch, resolve_to_ipv4, is_ip_address,
+                        expand_ip_range, normalize_host, icmp_ping)
 from .arp_lookup import get_mac_address
 from .exporters import export_results
 from .dialogs import AddTargetsDialog, SettingsDialog, ExportSelectionDialog
@@ -92,22 +93,38 @@ class ResolveWorker(QThread):
 
 
 class MacWorker(QThread):
-    """后台线程并行查询 MAC 地址，避免阻塞 GUI 主线程"""
+    """后台线程并行查询 MAC 地址，避免阻塞 GUI 主线程。
+    域名目标先解析为 IPv4；查询前先 ping 一次以填充 ARP 缓存。"""
+
     mac_done = pyqtSignal(list)  # [(target, mac), ...]
 
     def __init__(self, targets):
         super().__init__()
         self.targets = targets
 
+    @staticmethod
+    def _query_one(t):
+        ip = t.address
+        if not is_ip_address(ip):
+            # 域名目标：优先用已解析的 IPv4，否则现场解析
+            ip = t.resolved_ip or resolve_to_ipv4(ip)
+        if not ip:
+            return (t, None)
+        try:
+            icmp_ping(ip, timeout=1)  # 触发 ARP 解析，填充邻居缓存
+        except Exception:
+            pass
+        return (t, get_mac_address(ip))
+
     def run(self):
         results = []
         with ThreadPoolExecutor(max_workers=min(20, max(1, len(self.targets)))) as ex:
-            future_to_target = {ex.submit(get_mac_address, t.address): t
+            future_to_target = {ex.submit(self._query_one, t): t
                                 for t in self.targets}
             for future in as_completed(future_to_target):
                 t = future_to_target[future]
                 try:
-                    mac = future.result()
+                    _, mac = future.result()
                     if mac:
                         results.append((t, mac))
                 except Exception:
@@ -236,6 +253,9 @@ class MainWindow(QMainWindow):
         existing = {(t.address, t.ping_mode, t.tcp_port) for t in self.targets}
         added = []
         for host, mode, port in target_list:
+            host = normalize_host(host)  # 清理协议前缀/路径等，统一入口规范化
+            if not host:
+                continue
             if (host, mode, port) in existing:
                 continue
             t = TargetStats(address=host, ping_mode=mode, tcp_port=port)
@@ -414,7 +434,10 @@ class MainWindow(QMainWindow):
                 t.selected = (item.checkState() == Qt.Checked)
 
     def _show_context_menu(self, pos):
-        """表格右键菜单（中文）"""
+        """表格右键菜单（中文）。先选中光标下的条目，使操作作用于该条目"""
+        index = self.table.indexAt(pos)
+        if index.isValid() and not self.table.selectionModel().isSelected(index):
+            self.table.selectRow(index.row())
         menu = QMenu(self)
         act_add = menu.addAction("添加目标...")
         act_del = menu.addAction("删除选中行")
@@ -541,11 +564,16 @@ class MainWindow(QMainWindow):
     def query_mac_addresses(self):
         if not self.targets:
             QMessageBox.information(self, "提示", "没有目标可查询"); return
-        running = [s for s in self.targets if s.is_running]
-        if not running:
-            self.status_label.setText("没有启用中的目标"); return
-        self.status_label.setText("正在后台查询 MAC 地址...")
-        worker = MacWorker(running)
+        # 优先查询选中的条目；未选中则查询全部启用中的目标
+        rows = set(idx.row() for idx in self.table.selectedIndexes())
+        if rows:
+            candidates = [t for t in (self._target_at_row(r) for r in rows) if t]
+        else:
+            candidates = [s for s in self.targets if s.is_running]
+        if not candidates:
+            self.status_label.setText("没有可查询的目标"); return
+        self.status_label.setText(f"正在后台查询 {len(candidates)} 个目标的 MAC 地址...")
+        worker = MacWorker(candidates)
         worker.mac_done.connect(self._on_mac_done)
         self._start_bg_worker(worker)
 
@@ -553,7 +581,11 @@ class MainWindow(QMainWindow):
         for t, mac in results:
             t.mac_address = mac
         self.refresh_table()
-        self.status_label.setText(f"MAC 地址查询完成（获取 {len(results)} 个）")
+        if results:
+            self.status_label.setText(f"MAC 地址查询完成（获取 {len(results)} 个）")
+        else:
+            self.status_label.setText(
+                "未获取到 MAC 地址（仅同一子网且可达的目标可查询）")
 
     def show_settings(self):
         dlg = SettingsDialog(self, self.ping_interval, self.max_workers,
