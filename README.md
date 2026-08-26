@@ -31,7 +31,7 @@
 
 ### 安装 deb 包
 ```bash
-sudo dpkg -i pinginfo_1.1.4_all.deb
+sudo dpkg -i pinginfo_1.1.5_all.deb
 # 若提示依赖未满足，执行：
 sudo apt-get install -f
 ```
@@ -79,7 +79,7 @@ pinginfo/
 ├── build.sh              # deb 打包脚本
 ├── requirements.txt      # 依赖
 ├── IP.txt                # 示例地址文件
-└── pinginfo_1.1.4_all.deb  # 打包后的 deb 安装包（架构无关 all）
+└── pinginfo_1.1.5_all.deb  # 打包后的 deb 安装包（架构无关 all）
 ```
 
 ## 打包为 deb
@@ -87,8 +87,8 @@ pinginfo/
 详见 `packaging/README.md`，或直接运行：
 
 ```bash
-./build.sh 1.1.4
-sudo dpkg -i dist/pinginfo_1.1.4_all.deb
+./build.sh 1.1.5
+sudo dpkg -i dist/pinginfo_1.1.5_all.deb
 ```
 
 ## 技术栈

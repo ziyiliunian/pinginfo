@@ -3,9 +3,10 @@
 from PyQt5.QtWidgets import (
     QMainWindow, QTableWidget, QTableWidgetItem, QAction, QStatusBar,
     QFileDialog, QMessageBox, QDialog, QLabel, QSpinBox, QHeaderView,
-    QAbstractItemView, QProgressBar, QMenu, QApplication
+    QAbstractItemView, QProgressBar, QMenu, QApplication,
+    QStyledItemDelegate, QStyleOptionButton, QStyleOptionViewItem, QStyle
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QEvent, QRect
 from PyQt5.QtGui import QColor, QDragEnterEvent, QDropEvent, QKeySequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .data_models import TargetStats
@@ -132,6 +133,60 @@ class MacWorker(QThread):
         self.mac_done.emit(results)
 
 
+class CenteredCheckBoxDelegate(QStyledItemDelegate):
+    """居中绘制复选框：点击中心切换，点击外围空白高亮整行。"""
+
+    row_select_requested = pyqtSignal(int)
+
+    @staticmethod
+    def _indicator_rect(style, option):
+        check_option = QStyleOptionButton()
+        indicator = style.subElementRect(QStyle.SE_CheckBoxIndicator,
+                                         check_option, option.widget)
+        return QRect(
+            option.rect.center().x() - indicator.width() // 2,
+            option.rect.center().y() - indicator.height() // 2,
+            indicator.width(), indicator.height()
+        )
+
+    def paint(self, painter, option, index):
+        style = option.widget.style() if option.widget else QApplication.style()
+
+        # 先绘制单元格背景/选中背景，不绘制默认左对齐复选框和文本
+        item_option = QStyleOptionViewItem(option)
+        self.initStyleOption(item_option, index)
+        item_option.state &= ~QStyle.State_HasFocus
+        item_option.features &= ~QStyleOptionViewItem.HasCheckIndicator
+        item_option.text = ""
+        style.drawControl(QStyle.CE_ItemViewItem, item_option, painter, option.widget)
+
+        check_option = QStyleOptionButton()
+        check_option.state = QStyle.State_Enabled
+        state = index.data(Qt.CheckStateRole)
+        check_option.state |= QStyle.State_On if state == Qt.Checked else QStyle.State_Off
+        check_option.rect = self._indicator_rect(style, option)
+        style.drawPrimitive(QStyle.PE_IndicatorCheckBox,
+                            check_option, painter, option.widget)
+
+    def editorEvent(self, event, model, option, index):
+        if not (index.flags() & Qt.ItemIsUserCheckable):
+            return False
+        keyboard_toggle = (event.type() == QEvent.KeyPress and
+                           event.key() in (Qt.Key_Space, Qt.Key_Select))
+        mouse_release = (event.type() == QEvent.MouseButtonRelease and
+                         event.button() == Qt.LeftButton)
+        if mouse_release:
+            style = option.widget.style() if option.widget else QApplication.style()
+            # 仅点击中心复选框本身才切换；外围空白高亮整行
+            if not self._indicator_rect(style, option).contains(event.pos()):
+                self.row_select_requested.emit(index.row())
+                return True
+        elif not keyboard_toggle:
+            return False
+        new_state = Qt.Unchecked if index.data(Qt.CheckStateRole) == Qt.Checked else Qt.Checked
+        return model.setData(index, new_state, Qt.CheckStateRole)
+
+
 class NumericTableWidgetItem(QTableWidgetItem):
     """按真实数值排序的单元格。缺失值（UserRole 为 None）排在最后。"""
     def __lt__(self, other):
@@ -176,32 +231,43 @@ class MainWindow(QMainWindow):
         self.table.setAlternatingRowColors(True)
         self.table.setShowGrid(False)
         self.table.setWordWrap(False)
+        self.table.setFocusPolicy(Qt.NoFocus)  # 取消点击后的焦点框线
+        monitor_delegate = CenteredCheckBoxDelegate(self.table)
+        monitor_delegate.row_select_requested.connect(self._highlight_row)
+        self.table.setItemDelegateForColumn(0, monitor_delegate)
         self.table.setStyleSheet("""
             QTableWidget {
                 background: #ffffff;
                 alternate-background-color: #f7f9fc;
                 color: #263238;
-                border: 1px solid #dbe3ec;
-                border-radius: 6px;
-                selection-background-color: #d9ecff;
-                selection-color: #0d47a1;
+                border: none;
+                outline: none;
+                selection-background-color: #e8f2fb;
+                selection-color: #163a59;
             }
             QTableWidget::item {
                 padding: 5px 8px;
-                border-bottom: 1px solid #edf1f5;
+                border: none;
             }
             QTableWidget::item:selected {
-                background: #d9ecff;
-                color: #0d47a1;
-                border: 1px solid #64b5f6;
+                background: #e8f2fb;
+                color: #163a59;
+                border: none;
+                outline: none;
             }
             QHeaderView::section {
-                background: #1565c0;
-                color: white;
+                background: #f2f4f7;
+                color: #37474f;
                 padding: 7px 6px;
                 border: none;
-                border-right: 1px solid #1976d2;
+                border-right: 1px solid #e0e4e8;
+                border-bottom: 1px solid #d5dadd;
                 font-weight: 600;
+            }
+            QTableCornerButton::section {
+                background: #f2f4f7;
+                border: none;
+                border-bottom: 1px solid #d5dadd;
             }
         """)
         self.table.verticalHeader().setVisible(False)
@@ -458,6 +524,12 @@ class MainWindow(QMainWindow):
 
     def on_log_message(self, msg):
         self.status_label.setText(msg)
+
+    def _highlight_row(self, row):
+        """监控列非中心区域被点击时，仅高亮整行，不改变复选框状态。"""
+        if 0 <= row < self.table.rowCount():
+            self.table.clearSelection()
+            self.table.selectRow(row)
 
     def _on_item_changed(self, item):
         """处理 checkbox 状态变化（按绑定的目标对象，排序后仍正确）"""
