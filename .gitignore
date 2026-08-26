@@ -7,14 +7,14 @@ __pycache__/
 venv/
 *.spec.bak
 
-# 构建产物
+# 构建中间产物
 build/
-dist/
 *.spec.backup
 
-# deb/Bash 打包输出（体积大，按需手动上传 Release）
-pinginfo_*.deb
-PingInfo_*.deb
+# dist 中仅保留并提交最近两个正式 deb 版本；其他位置的 deb 不提交
+*.deb
+!dist/
+!dist/pinginfo_*.deb
 
 # 系统 / 编辑器
 .DS_Store

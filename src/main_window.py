@@ -3,10 +3,10 @@
 from PyQt5.QtWidgets import (
     QMainWindow, QTableWidget, QTableWidgetItem, QAction, QStatusBar,
     QFileDialog, QMessageBox, QDialog, QLabel, QSpinBox, QHeaderView,
-    QAbstractItemView, QProgressBar, QMenu
+    QAbstractItemView, QProgressBar, QMenu, QApplication
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt5.QtGui import QColor, QDragEnterEvent, QDropEvent
+from PyQt5.QtGui import QColor, QDragEnterEvent, QDropEvent, QKeySequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .data_models import TargetStats
 from .ping_core import (ping_batch, resolve_to_ipv4, is_ip_address,
@@ -16,7 +16,7 @@ from .exporters import export_results
 from .dialogs import AddTargetsDialog, SettingsDialog, ExportSelectionDialog
 
 COLUMNS = [
-    (0, "选择", 40), (1, "序号", 40), (2, "地址", 140),
+    (0, "监控", 58), (1, "序号", 50), (2, "地址", 150),
     (3, "Ping方式", 70), (4, "状态", 60), (5, "响应时间(ms)", 100),
     (6, "丢包率(%)", 80), (7, "成功", 50), (8, "失败", 50),
     (9, "平均(ms)", 90), (10, "最小(ms)", 80), (11, "最大(ms)", 80),
@@ -170,10 +170,42 @@ class MainWindow(QMainWindow):
         self.table.setColumnCount(len(COLUMNS))
         self.table.setHorizontalHeaderLabels([c[1] for c in COLUMNS])
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        # 按单元格选择，解析地址、MAC 等内容可独立复制
+        self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.setWordWrap(False)
+        self.table.setStyleSheet("""
+            QTableWidget {
+                background: #ffffff;
+                alternate-background-color: #f7f9fc;
+                color: #263238;
+                border: 1px solid #dbe3ec;
+                border-radius: 6px;
+                selection-background-color: #d9ecff;
+                selection-color: #0d47a1;
+            }
+            QTableWidget::item {
+                padding: 5px 8px;
+                border-bottom: 1px solid #edf1f5;
+            }
+            QTableWidget::item:selected {
+                background: #d9ecff;
+                color: #0d47a1;
+                border: 1px solid #64b5f6;
+            }
+            QHeaderView::section {
+                background: #1565c0;
+                color: white;
+                padding: 7px 6px;
+                border: none;
+                border-right: 1px solid #1976d2;
+                font-weight: 600;
+            }
+        """)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(34)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
         header = self.table.horizontalHeader()
@@ -206,6 +238,9 @@ class MainWindow(QMainWindow):
         a.triggered.connect(self.close); fm.addAction(a)
 
         edm = mb.addMenu("编辑(&E)")
+        a = QAction("复制选中单元格", self); a.setShortcut(QKeySequence.Copy)
+        a.triggered.connect(self.copy_selected_cells); edm.addAction(a)
+        edm.addSeparator()
         a = QAction("删除选中行", self); a.setShortcut("Delete")
         a.triggered.connect(self.delete_selected); edm.addAction(a)
         a = QAction("清空全部", self); a.triggered.connect(self.clear_all); edm.addAction(a)
@@ -433,12 +468,28 @@ class MainWindow(QMainWindow):
             if t is not None:
                 t.selected = (item.checkState() == Qt.Checked)
 
+    def copy_selected_cells(self):
+        """按行列顺序复制选中单元格；多单元格使用制表符和换行分隔"""
+        indexes = sorted(self.table.selectedIndexes(), key=lambda i: (i.row(), i.column()))
+        if not indexes:
+            return
+        rows = {}
+        for index in indexes:
+            item = self.table.item(index.row(), index.column())
+            rows.setdefault(index.row(), []).append(item.text() if item else "")
+        text = "\n".join("\t".join(values) for _, values in sorted(rows.items()))
+        QApplication.clipboard().setText(text)
+        self.status_label.setText(f"已复制 {len(indexes)} 个单元格")
+
     def _show_context_menu(self, pos):
-        """表格右键菜单（中文）。先选中光标下的条目，使操作作用于该条目"""
+        """表格右键菜单。右键单元格时保留单元格级选择，便于精确复制"""
         index = self.table.indexAt(pos)
         if index.isValid() and not self.table.selectionModel().isSelected(index):
-            self.table.selectRow(index.row())
+            self.table.clearSelection()
+            self.table.setCurrentCell(index.row(), index.column())
         menu = QMenu(self)
+        act_copy = menu.addAction("复制单元格内容")
+        menu.addSeparator()
         act_add = menu.addAction("添加目标...")
         act_del = menu.addAction("删除选中行")
         menu.addSeparator()
@@ -453,7 +504,9 @@ class MainWindow(QMainWindow):
         act_export = menu.addAction("导出结果...")
 
         action = menu.exec_(self.table.viewport().mapToGlobal(pos))
-        if action == act_add:
+        if action == act_copy:
+            self.copy_selected_cells()
+        elif action == act_add:
             self.add_targets_dialog()
         elif action == act_del:
             self.delete_selected()
@@ -497,7 +550,9 @@ class MainWindow(QMainWindow):
         cb_item = self.table.item(row, 0)
         if cb_item is None:
             cb_item = QTableWidgetItem()
-            cb_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            cb_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            cb_item.setTextAlignment(Qt.AlignCenter)
+            cb_item.setToolTip("勾选后可按勾选范围导出；与行选择相互独立")
             self.table.setItem(row, 0, cb_item)
         # 绑定目标对象，排序后仍能映射回正确的目标
         cb_item.setData(Qt.UserRole, s)

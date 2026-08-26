@@ -1,17 +1,19 @@
 #!/bin/bash
 # PingInfo Debian 打包脚本
 # 用法: ./build.sh [版本号]
-#   默认版本 1.1.3；可传参覆盖，如 ./build.sh 1.1.4
+#   默认版本 1.1.4；可传参覆盖，如 ./build.sh 1.1.5
 set -e
 
 cd "$(dirname "$0")"
 
 APP_NAME="pinginfo"
-VERSION="${1:-1.1.3}"
+VERSION="${1:-1.1.4}"
 ARCH="all"
 PKG="${APP_NAME}_${VERSION}_${ARCH}.deb"
 OUT_DIR="dist"
-PKGROOT="build/pkgroot"
+mkdir -p build
+PKGROOT=$(mktemp -d "build/pkgroot.${VERSION}.XXXXXX")
+trap 'find "$PKGROOT" -depth -delete 2>/dev/null || true' EXIT
 
 echo "=== PingInfo Debian Build (v${VERSION}) ==="
 
@@ -21,11 +23,7 @@ if ! command -v dpkg-deb >/dev/null 2>&1; then
     exit 1
 fi
 
-# 清理旧构建
-rm -rf "$PKGROOT"
-mkdir -p "$PKGROOT"
-
-# 以 packaging/ 为骨架复制到构建根
+# 以 packaging/ 为骨架复制到临时构建根
 cp -r packaging/* "$PKGROOT/"
 
 # 复制源码（保持 src/ 包结构，启动器通过 /opt/pinginfo/src 导入）
