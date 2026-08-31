@@ -11,7 +11,8 @@ from PyQt5.QtGui import QColor, QDragEnterEvent, QDropEvent, QKeySequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .data_models import TargetStats
 from .ping_core import (ping_batch, resolve_to_ipv4, is_ip_address,
-                        expand_ip_range, normalize_host, icmp_ping)
+                        expand_ip_range, normalize_host, icmp_ping,
+                        parse_host_port)
 from .arp_lookup import get_mac_address
 from .exporters import export_results
 from .dialogs import AddTargetsDialog, SettingsDialog, ExportSelectionDialog
@@ -44,7 +45,8 @@ class PingWorker(QThread):
     def run(self):
         self.log_message.emit("开始监控...")
         while not self._stop:
-            active = [t for t in self.targets if t.is_running]
+            # 每轮使用稳定快照；列表在 GUI 线程增删时不会影响本轮遍历
+            active = [t for t in list(self.targets) if t.is_running]
             if active:
                 results = ping_batch(active, max_workers=self.max_workers,
                                      timeout=self.timeout,
@@ -279,6 +281,7 @@ class MainWindow(QMainWindow):
             header.resizeSection(idx, w)
         header.setStretchLastSection(True)
         header.setSectionResizeMode(17, QHeaderView.Stretch)
+        self.table.setSortingEnabled(True)
         self.table.itemChanged.connect(self._on_item_changed)
         self.setCentralWidget(self.table)
 
@@ -386,9 +389,15 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"已解析 {len(results)} 个域名")
 
     def _start_bg_worker(self, worker):
-        """启动后台线程并持有引用，结束后自动清理，避免线程对象被提前回收"""
+        """启动后台线程并持有引用，结束后安全清理。"""
         self._bg_workers.append(worker)
-        worker.finished.connect(lambda: self._bg_workers.remove(worker))
+
+        def cleanup():
+            if worker in self._bg_workers:
+                self._bg_workers.remove(worker)
+            worker.deleteLater()
+
+        worker.finished.connect(cleanup)
         worker.start()
 
     def add_targets_dialog(self):
@@ -441,12 +450,13 @@ class MainWindow(QMainWindow):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            port = self.default_tcp_port; host = line
-            if ":" in line and line.count(":") == 1:
-                parts = line.rsplit(":", 1)
-                if parts[1].isdigit():
-                    host = parts[0]; port = int(parts[1])
-                    tl.append((host, "TCP", port)); continue
+            host, port, valid = parse_host_port(line, self.default_tcp_port)
+            if not valid:
+                continue
+            explicit_tcp = line.startswith('[') and ']:' in line
+            explicit_tcp = explicit_tcp or (line.count(':') == 1 and line.rsplit(':', 1)[1].isdigit())
+            if explicit_tcp:
+                tl.append((host, "TCP", port)); continue
             # 展开 IP 范围
             for ip in expand_ip_range(host):
                 tl.append((ip, self.default_ping_mode, port))
@@ -507,9 +517,19 @@ class MainWindow(QMainWindow):
             except (TypeError, RuntimeError):
                 pass
             if self.worker.isRunning():
-                if not self.worker.wait(5000):
-                    # 当前批次仍未结束：让其在后台自然结束并自动销毁，不再持有引用
-                    self.worker.finished.connect(self.worker.deleteLater)
+                wait_ms = int((self.ping_timeout + 7) * 1000)
+                if not self.worker.wait(wait_ms):
+                    # 当前批次仍未结束：纳入后台线程跟踪，结束后安全销毁
+                    stopping_worker = self.worker
+                    if stopping_worker not in self._bg_workers:
+                        self._bg_workers.append(stopping_worker)
+
+                    def cleanup_stopping():
+                        if stopping_worker in self._bg_workers:
+                            self._bg_workers.remove(stopping_worker)
+                        stopping_worker.deleteLater()
+
+                    stopping_worker.finished.connect(cleanup_stopping)
         self.worker = None
         self.act_start.setEnabled(True); self.act_stop.setEnabled(False)
         self.progress.setVisible(False)
@@ -519,7 +539,7 @@ class MainWindow(QMainWindow):
             if result.success:
                 target.update_success(result.rtt, result.ttl)
             else:
-                target.update_fail(result.error or "失败")
+                target.update_fail(result.error or "失败", result.rtt)
         self.refresh_table(); self.update_count()
 
     def on_log_message(self, msg):
@@ -601,11 +621,17 @@ class MainWindow(QMainWindow):
 
     def refresh_table(self):
         self.table.blockSignals(True)
+        sorting = self.table.isSortingEnabled()
+        header = self.table.horizontalHeader()
+        sort_col = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(self.targets))
         for row, s in enumerate(self.targets):
             self._set_row(row, s)
-        self.table.setSortingEnabled(True)
+        self.table.setSortingEnabled(sorting)
+        if sorting and sort_col >= 0:
+            self.table.sortItems(sort_col, sort_order)
         self.table.blockSignals(False)
 
     def _target_at_row(self, row):
@@ -793,12 +819,13 @@ class MainWindow(QMainWindow):
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
-                port = self.default_tcp_port; host = line
-                if ":" in line and line.count(":") == 1:
-                    parts = line.rsplit(":", 1)
-                    if parts[1].isdigit():
-                        host = parts[0]; port = int(parts[1])
-                        tl.append((host, "TCP", port)); continue
+                host, port, valid = parse_host_port(line, self.default_tcp_port)
+                if not valid:
+                    continue
+                explicit_tcp = line.startswith('[') and ']:' in line
+                explicit_tcp = explicit_tcp or (line.count(':') == 1 and line.rsplit(':', 1)[1].isdigit())
+                if explicit_tcp:
+                    tl.append((host, "TCP", port)); continue
                 for ip in expand_ip_range(host):
                     tl.append((ip, self.default_ping_mode, port))
             if tl:
@@ -807,4 +834,11 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.stop_monitoring()
+        # ResolveWorker/MacWorker 均有明确超时；退出前等待，避免运行中的 QThread 被销毁
+        for worker in list(self._bg_workers):
+            if worker.isRunning() and not worker.wait(35000):
+                QMessageBox.warning(self, "正在结束任务",
+                    "后台任务尚未结束，请稍后再次关闭窗口。")
+                event.ignore()
+                return
         event.accept()

@@ -52,6 +52,14 @@ def export_txt(stats_list, filepath: str) -> bool:
         return False
 
 
+def _safe_csv_value(value):
+    """防止表格软件把用户可控文本解释为公式。"""
+    text = "" if value is None else str(value)
+    if text.startswith(('=', '+', '-', '@', '\t', '\r')):
+        return "'" + text
+    return text
+
+
 def export_csv(stats_list, filepath: str) -> bool:
     """导出为 CSV 格式"""
     try:
@@ -60,7 +68,8 @@ def export_csv(stats_list, filepath: str) -> bool:
             writer.writerow([label for _, label in EXPORT_COLUMNS])
             for stats in stats_list:
                 data = stats.to_dict()
-                writer.writerow([str(data.get(key, "")) for key, _ in EXPORT_COLUMNS])
+                writer.writerow([_safe_csv_value(data.get(key, ""))
+                                 for key, _ in EXPORT_COLUMNS])
         return True
     except Exception as e:
         print(f"导出 CSV 失败: {e}")

@@ -10,6 +10,7 @@ import socket
 import time
 import platform
 import ipaddress
+import sys
 from dataclasses import dataclass
 from typing import Optional, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -240,12 +241,35 @@ def resolve_hostname(ip: str) -> str:
 
 
 def is_ip_address(address: str) -> bool:
-    """判断字符串是否为合法 IPv4 地址"""
+    """判断字符串是否为合法 IPv4 或 IPv6 地址。"""
     try:
-        ipaddress.IPv4Address(address)
+        ipaddress.ip_address(address)
         return True
-    except (ValueError, ipaddress.AddressValueError):
+    except ValueError:
         return False
+
+
+def parse_host_port(value: str, default_port: int):
+    """解析域名/IPv4/IPv6 与可选端口，支持 host:port 和 [IPv6]:port。"""
+    value = value.strip()
+    host, port = value, default_port
+    if value.startswith('['):
+        end = value.find(']')
+        if end > 0:
+            host = value[1:end]
+            suffix = value[end + 1:]
+            if suffix:
+                if not suffix.startswith(':') or not suffix[1:].isdigit():
+                    return value, default_port, False
+                port = int(suffix[1:])
+    elif value.count(':') == 1:
+        candidate_host, candidate_port = value.rsplit(':', 1)
+        if candidate_port.isdigit():
+            host, port = candidate_host, int(candidate_port)
+    # 裸多冒号字符串按 IPv6 地址处理，不猜测末段端口
+    if not host or not 1 <= port <= 65535:
+        return value, default_port, False
+    return host, port, True
 
 
 def normalize_host(line: str) -> str:
@@ -278,25 +302,27 @@ def normalize_host(line: str) -> str:
 
 
 def resolve_to_ipv4(address: str, timeout: float = 2.0) -> Optional[str]:
-    """
-    将域名解析为 IPv4 地址。
-    - 如果 address 是合法 IPv4，直接返回 None（无需解析）
-    - 如果是域名，返回解析得到的 IPv4 字符串；解析失败时返回 None
-    """
+    """将域名解析为 IPv4；使用标准库子进程提供真实、可终止的超时。"""
     address = normalize_host(address)
     if is_ip_address(address):
         return None
+    script = (
+        "import socket,sys; "
+        "infos=socket.getaddrinfo(sys.argv[1],None,socket.AF_INET,socket.SOCK_STREAM); "
+        "print(infos[0][4][0] if infos else '')"
+    )
     try:
-        # socket.gethostbyname 仅返回 IPv4，且自带超时控制较弱，
-        # 通过 getaddrinfo 限定 family=AF_INET 以确保只取 IPv4 结果
-        infos = socket.getaddrinfo(address, None, socket.AF_INET, socket.SOCK_STREAM)
-        for info in infos:
-            ip = info[4][0]
-            if is_ip_address(ip):
-                return ip
-    except Exception:
-        # gaierror/herror/TimeoutError 等均为 Exception 子类，统一兜底返回 None
-        return None
+        result = subprocess.run(
+            [sys.executable, '-c', script, address],
+            capture_output=True, text=True, timeout=max(0.1, timeout),
+            check=False
+        )
+        ip = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+        if ip:
+            ipaddress.IPv4Address(ip)
+            return ip
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        pass
     return None
 
 

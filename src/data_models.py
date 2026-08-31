@@ -23,7 +23,8 @@ class TargetStats:
     min_rtt: Optional[float] = None
     max_rtt: Optional[float] = None
     sum_rtt: float = 0.0
-    rtt_history: List[float] = field(default_factory=list)
+    rtt_sample_count: int = 0
+    rtt_history: List[Optional[float]] = field(default_factory=list)
     last_ttl: Optional[int] = None
     last_success_time: Optional[str] = None
     last_fail_time: Optional[str] = None
@@ -44,10 +45,10 @@ class TargetStats:
 
     @property
     def avg_rtt(self) -> Optional[float]:
-        """平均延迟"""
-        if self.success_count == 0:
+        """平均延迟，仅统计成功解析到 RTT 的样本。"""
+        if self.rtt_sample_count == 0:
             return None
-        return self.sum_rtt / self.success_count
+        return self.sum_rtt / self.rtt_sample_count
 
     @property
     def status_text(self) -> str:
@@ -69,6 +70,7 @@ class TargetStats:
         self.last_rtt = rtt
         if rtt is not None:
             self.sum_rtt += rtt
+            self.rtt_sample_count += 1
             if self.min_rtt is None or rtt < self.min_rtt:
                 self.min_rtt = rtt
             if self.max_rtt is None or rtt > self.max_rtt:
@@ -82,11 +84,11 @@ class TargetStats:
         if len(self.rtt_history) > self._max_history:
             self.rtt_history.pop(0)
 
-    def update_fail(self, error: str = ""):
-        """更新失败结果"""
+    def update_fail(self, error: str = "", rtt: Optional[float] = None):
+        """更新失败结果；连接被拒绝等场景可保留已测得的 RTT。"""
         self.total_count += 1
         self.fail_count += 1
-        self.last_rtt = None
+        self.last_rtt = rtt
         self.last_fail_time = time.strftime("%Y-%m-%d %H:%M:%S")
         self.last_error = error if error else "请求失败"
         self.rtt_history.append(None)
@@ -102,6 +104,7 @@ class TargetStats:
         self.min_rtt = None
         self.max_rtt = None
         self.sum_rtt = 0.0
+        self.rtt_sample_count = 0
         self.rtt_history.clear()
         self.last_ttl = None
         self.last_success_time = None

@@ -87,7 +87,7 @@ pinginfo/
 详见 `packaging/README.md`，或直接运行：
 
 ```bash
-./build.sh 1.1.5
+./build.sh 1.1.6
 sudo dpkg -i dist/pinginfo_1.1.5_all.deb
 ```
 

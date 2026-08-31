@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QKeySequence
-from .ping_core import expand_ip_range
+from .ping_core import expand_ip_range, parse_host_port
 
 
 class ChineseTextEdit(QTextEdit):
@@ -158,14 +158,10 @@ class AddTargetsDialog(QDialog):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            port = tcp_port
-            host = line
-            # 解析 host:port 格式（排除 IPv6）
-            if ":" in line and line.count(":") == 1:
-                parts = line.rsplit(":", 1)
-                if parts[1].isdigit():
-                    host = parts[0]
-                    port = int(parts[1])
+            host, port, valid = parse_host_port(line, tcp_port)
+            if not valid:
+                QMessageBox.warning(self, "格式错误", f"无效的目标或端口: {line}")
+                return
             # 展开 IP 范围 (如 192.168.0.10-201 或 192.168.0.0/24)
             expanded = expand_ip_range(host)
             for ip in expanded:
