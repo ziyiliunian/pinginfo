@@ -33,6 +33,7 @@ class TargetStats:
     selected: bool = True           # 是否被勾选（用于导出选择）
     last_error: Optional[str] = None
     resolved_ip: Optional[str] = None  # 解析地址：当 address 为域名时存储解析后的 IPv4
+    response_address: Optional[str] = None  # 最近一次实际响应的 IP 地址
     # 保留最近 20 次的 RTT 用于计算
     _max_history: int = 20
 
@@ -110,6 +111,7 @@ class TargetStats:
         self.last_success_time = None
         self.last_fail_time = None
         self.last_error = None
+        self.response_address = None
 
     def to_dict(self) -> dict:
         """转换为字典（用于导出）"""
@@ -131,5 +133,6 @@ class TargetStats:
             "last_fail": self.last_fail_time or "",
             "mac_address": self.mac_address or "",
             "resolved_ip": self.resolved_ip or "",
+            "response_address": self.response_address or "",
             "last_error": self.last_error or "",
         }

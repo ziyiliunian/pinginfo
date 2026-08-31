@@ -1,31 +1,25 @@
 # -*- coding: utf-8 -*-
 """主窗口模块 - PingInfo 主界面"""
+import time
+
 from PyQt5.QtWidgets import (
-    QMainWindow, QTableWidget, QTableWidgetItem, QAction, QStatusBar,
+    QMainWindow, QTableView, QAction, QStatusBar,
     QFileDialog, QMessageBox, QDialog, QLabel, QSpinBox, QHeaderView,
     QAbstractItemView, QProgressBar, QMenu, QApplication,
     QStyledItemDelegate, QStyleOptionButton, QStyleOptionViewItem, QStyle
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QEvent, QRect, QTimer
 from PyQt5.QtGui import QColor, QDragEnterEvent, QDropEvent, QKeySequence, QPen
-from concurrent.futures import (ThreadPoolExecutor, as_completed,
-                                TimeoutError as FuturesTimeoutError)
+from concurrent.futures import (FIRST_COMPLETED, ThreadPoolExecutor, wait)
 from .data_models import TargetStats
-from .ping_core import (ping_batch, resolve_to_ipv4, is_ip_address,
-                        expand_ip_range, normalize_host, icmp_ping,
-                        parse_host_port)
+from .ping_core import (ping_batch, resolve_to_ipv4, resolve_hostname,
+                        is_ip_address, expand_ip_range, normalize_host,
+                        icmp_ping, parse_host_port)
 from .arp_lookup import get_mac_address
 from .exporters import export_results
-from .dialogs import AddTargetsDialog, SettingsDialog, ExportSelectionDialog
-
-COLUMNS = [
-    (0, "监控", 58), (1, "序号", 50), (2, "地址", 150),
-    (3, "Ping方式", 70), (4, "状态", 60), (5, "响应时间(ms)", 100),
-    (6, "丢包率(%)", 80), (7, "成功", 50), (8, "失败", 50),
-    (9, "平均(ms)", 90), (10, "最小(ms)", 80), (11, "最大(ms)", 80),
-    (12, "TTL", 50), (13, "最近成功时间", 150), (14, "最近失败时间", 150),
-    (15, "MAC地址", 130), (16, "解析地址", 130), (17, "错误信息", 200),
-]
+from .dialogs import (AddTargetsDialog, SettingsDialog, ExportSelectionDialog,
+                      TargetDetailsDialog)
+from .table_model import COLUMNS, TARGET_ROLE, TargetSortProxyModel, TargetTableModel
 
 
 class PingWorker(QThread):
@@ -82,29 +76,42 @@ class ResolveWorker(QThread):
     def __init__(self, targets):
         super().__init__()
         self.targets = targets
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+        self.requestInterruption()
+
+    @staticmethod
+    def _resolve_target(target):
+        if is_ip_address(target.address):
+            hostname = resolve_hostname(target.address)
+            return target, target.address, ("" if hostname == target.address else hostname)
+        return target, resolve_to_ipv4(target.address), target.address
 
     def run(self):
         results = []
-        ex = ThreadPoolExecutor(max_workers=min(50, max(1, len(self.targets))))
+        executor = ThreadPoolExecutor(max_workers=min(50, max(1, len(self.targets))))
+        futures = {executor.submit(self._resolve_target, target)
+                   for target in self.targets}
+        deadline = time.monotonic() + self.OVERALL_TIMEOUT
         try:
-            future_to_target = {ex.submit(resolve_to_ipv4, t.address): t
-                                for t in self.targets}
-            try:
-                for future in as_completed(future_to_target, timeout=self.OVERALL_TIMEOUT):
-                    t = future_to_target[future]
+            while futures and not self._stop and time.monotonic() < deadline:
+                done, futures = wait(futures, timeout=0.2,
+                                     return_when=FIRST_COMPLETED)
+                for future in done:
                     try:
-                        ip = future.result()
-                        if ip:
-                            results.append((t, ip))
+                        target, ip, hostname = future.result()
+                        if ip or hostname:
+                            results.append((target, ip, hostname))
                     except Exception:
                         pass
-            except FuturesTimeoutError:
-                pass  # 超时：保留已完成结果
         finally:
-            for future in future_to_target:
+            for future in futures:
                 future.cancel()
-            ex.shutdown(wait=False)
-        self.resolve_done.emit(results)
+            executor.shutdown(wait=False)
+        if not self._stop:
+            self.resolve_done.emit(results)
 
 
 class MacWorker(QThread):
@@ -116,6 +123,11 @@ class MacWorker(QThread):
     def __init__(self, targets):
         super().__init__()
         self.targets = targets
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+        self.requestInterruption()
 
     @staticmethod
     def _query_one(t):
@@ -133,23 +145,27 @@ class MacWorker(QThread):
 
     def run(self):
         results = []
-        ex = ThreadPoolExecutor(max_workers=min(20, max(1, len(self.targets))))
-        future_to_target = {ex.submit(self._query_one, t): t for t in self.targets}
+        executor = ThreadPoolExecutor(max_workers=min(20, max(1, len(self.targets))))
+        futures = {executor.submit(self._query_one, target)
+                   for target in self.targets}
+        deadline = time.monotonic() + 35
         try:
-            for future in as_completed(future_to_target, timeout=35):
-                try:
-                    target, mac = future.result()
-                    if mac:
-                        results.append((target, mac))
-                except Exception:
-                    pass
-        except FuturesTimeoutError:
-            pass
+            while futures and not self._stop and time.monotonic() < deadline:
+                done, futures = wait(futures, timeout=0.2,
+                                     return_when=FIRST_COMPLETED)
+                for future in done:
+                    try:
+                        target, mac = future.result()
+                        if mac:
+                            results.append((target, mac))
+                    except Exception:
+                        pass
         finally:
-            for future in future_to_target:
+            for future in futures:
                 future.cancel()
-            ex.shutdown(wait=False)
-        self.mac_done.emit(results)
+            executor.shutdown(wait=False)
+        if not self._stop:
+            self.mac_done.emit(results)
 
 
 def _draw_row_selection_frame(painter, option, index):
@@ -233,27 +249,25 @@ class CenteredCheckBoxDelegate(QStyledItemDelegate):
         return model.setData(index, new_state, Qt.CheckStateRole)
 
 
-class NumericTableWidgetItem(QTableWidgetItem):
-    """按真实数值排序的单元格。缺失值（UserRole 为 None）排在最后。"""
-    def __lt__(self, other):
-        INF = float("inf")
-        a = self.data(Qt.UserRole)
-        b = other.data(Qt.UserRole) if other is not None else None
-        a = INF if a is None else a
-        b = INF if b is None else b
-        return a < b
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PingInfo - 批量 Ping 与实时监控工具")
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setMinimumSize(1200, 600)
         self.resize(1400, 700)
         self.targets = []
         self.worker = None
         self._bg_workers = []   # 后台线程（DNS 解析 / MAC 查询）引用
+        self._child_windows = []  # 保持本窗口创建的新窗口引用
         self._close_pending = False
+        app = QApplication.instance()
+        if app is not None:
+            windows = getattr(app, "_pinginfo_windows", None)
+            if windows is None:
+                windows = []
+                app._pinginfo_windows = windows
+            windows.append(self)
         self.ping_interval = 1
         self.max_workers = 500
         self.ping_timeout = 3
@@ -268,9 +282,11 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
 
     def _init_ui(self):
-        self.table = QTableWidget()
-        self.table.setColumnCount(len(COLUMNS))
-        self.table.setHorizontalHeaderLabels([c[1] for c in COLUMNS])
+        self.table_model = TargetTableModel(self.targets, self)
+        self.proxy_model = TargetSortProxyModel(self)
+        self.proxy_model.setSourceModel(self.table_model)
+        self.table = QTableView()
+        self.table.setModel(self.proxy_model)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         # 按单元格选择，解析地址、MAC 等内容可独立复制
         self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
@@ -284,7 +300,7 @@ class MainWindow(QMainWindow):
         monitor_delegate.row_select_requested.connect(self._highlight_row)
         self.table.setItemDelegateForColumn(0, monitor_delegate)
         self.table.setStyleSheet("""
-            QTableWidget {
+            QTableView {
                 background: #ffffff;
                 alternate-background-color: #f7f9fc;
                 color: #263238;
@@ -293,11 +309,11 @@ class MainWindow(QMainWindow):
                 selection-background-color: #c7def2;
                 selection-color: #102f49;
             }
-            QTableWidget::item {
+            QTableView::item {
                 padding: 5px 8px;
                 border: none;
             }
-            QTableWidget::item:selected {
+            QTableView::item:selected {
                 background: #c7def2;
                 color: #102f49;
                 border: none;
@@ -323,12 +339,11 @@ class MainWindow(QMainWindow):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
         header = self.table.horizontalHeader()
-        for idx, _, w in COLUMNS:
-            header.resizeSection(idx, w)
+        for idx, _, width in COLUMNS:
+            header.resizeSection(idx, width)
         header.setStretchLastSection(True)
         header.setSectionResizeMode(17, QHeaderView.Stretch)
         self.table.setSortingEnabled(True)
-        self.table.itemChanged.connect(self._on_item_changed)
         self.setCentralWidget(self.table)
 
     def _init_menu(self):
@@ -408,31 +423,38 @@ class MainWindow(QMainWindow):
                 continue
             if (host, mode, port) in existing:
                 continue
-            t = TargetStats(address=host, ping_mode=mode, tcp_port=port)
-            self.targets.append(t)
+            t = TargetStats(
+                address=host,
+                hostname=host if not is_ip_address(host) else "",
+                ping_mode=mode,
+                tcp_port=port,
+            )
             existing.add((host, mode, port))
             added.append(t)
         if not added:
             return
-        self.refresh_table(); self.update_count()
+        self.table_model.append_targets(added)
+        self.update_count()
         # 异步解析域名 -> IPv4
         self._resolve_targets_async(added)
 
     def _resolve_targets_async(self, targets):
-        """后台线程并行解析域名对应的 IPv4 地址，完成后回填并刷新表格"""
-        domains = [t for t in targets if not is_ip_address(t.address)]
-        if not domains:
+        """后台解析域名 IP，并反向解析 IP 目标的主机名。"""
+        if not targets:
             return
-        self.status_label.setText("正在解析域名 IPv4 地址...")
-        worker = ResolveWorker(domains)
+        self.status_label.setText("正在解析目标地址和主机名...")
+        worker = ResolveWorker(targets)
         worker.resolve_done.connect(self._on_resolve_done)
         self._start_bg_worker(worker)
 
     def _on_resolve_done(self, results):
-        for t, ip in results:
-            t.resolved_ip = ip
-        self.refresh_table()
-        self.status_label.setText(f"已解析 {len(results)} 个域名")
+        for target, ip, hostname in results:
+            if ip:
+                target.resolved_ip = ip
+            if hostname:
+                target.hostname = hostname
+        self.table_model.notify_targets((result[0] for result in results), 16, 16)
+        self.status_label.setText(f"已解析 {len(results)} 个目标")
 
     def _start_bg_worker(self, worker):
         """启动后台线程并持有引用，结束后安全清理。"""
@@ -449,36 +471,63 @@ class MainWindow(QMainWindow):
     def add_targets_dialog(self):
         dlg = AddTargetsDialog(self)
         if dlg.exec_() == QDialog.Accepted:
-            ts = dlg.get_targets()
-            if ts:
-                self.add_targets(ts)
-                self.status_label.setText(f"已添加 {len(ts)} 个目标")
+            targets = dlg.get_targets()
+            if targets:
+                self.add_targets(targets)
+                self.status_label.setText(f"已添加 {len(targets)} 个目标")
+                return True
+        return False
+
+    def _create_independent_window(self):
+        """创建拥有独立目标、模型和后台任务的新主窗口。"""
+        window = MainWindow()
+        window.ping_interval = self.ping_interval
+        window.max_workers = self.max_workers
+        window.ping_timeout = self.ping_timeout
+        window.packet_size = self.packet_size
+        window.icmp_ttl = self.icmp_ttl
+        window.default_ping_mode = self.default_ping_mode
+        window.default_tcp_port = self.default_tcp_port
+        window.setWindowIcon(self.windowIcon())
+        self._child_windows.append(window)
+        window.destroyed.connect(
+            lambda _=None, child=window: self._forget_child_window(child))
+        return window
+
+    def _forget_child_window(self, window):
+        if window in self._child_windows:
+            self._child_windows.remove(window)
+        app = QApplication.instance()
+        windows = getattr(app, "_pinginfo_windows", []) if app else []
+        if window in windows:
+            windows.remove(window)
 
     def reload_targets_dialog(self):
-        """清空所有目标后重新添加"""
-        self.stop_monitoring()
-        self.targets.clear()
-        self.refresh_table(); self.update_count()
-        dlg = AddTargetsDialog(self)
-        if dlg.exec_() == QDialog.Accepted:
-            ts = dlg.get_targets()
-            if ts:
-                self.add_targets(ts)
-                self.status_label.setText(f"已重新添加 {len(ts)} 个目标")
-            else:
-                self.status_label.setText("已清空所有目标")
+        """在独立的新窗口中添加目标，不修改当前窗口。"""
+        window = self._create_independent_window()
+        dialog = AddTargetsDialog(window)
+        if dialog.exec_() == QDialog.Accepted and dialog.get_targets():
+            targets = dialog.get_targets()
+            window.add_targets(targets)
+            window.status_label.setText(f"已添加 {len(targets)} 个目标")
+            window.show()
         else:
-            self.status_label.setText("已清空所有目标")
+            self._forget_child_window(window)
+            window.deleteLater()
 
     def reload_from_file(self):
-        """清空所有目标后从文件重新载入"""
-        fp, _ = QFileDialog.getOpenFileName(self, "选择地址文件", "", "文本文件 (*.txt);;所有文件 (*)")
-        if fp:
-            self.stop_monitoring()
-            self.targets.clear()
-            self.refresh_table(); self.update_count()
-            self._load_file(fp)
-            self.status_label.setText("已从文件重新载入目标")
+        """在独立的新窗口中载入文件，不修改当前窗口。"""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "选择地址文件", "", "文本文件 (*.txt);;所有文件 (*)")
+        if not filepath:
+            return
+        window = self._create_independent_window()
+        if window._load_file(filepath):
+            window.show()
+            window.status_label.setText("已从文件载入目标")
+        else:
+            self._forget_child_window(window)
+            window.deleteLater()
 
     def load_from_file(self):
         fp, _ = QFileDialog.getOpenFileName(self, "选择地址文件", "", "文本文件 (*.txt);;所有文件 (*)")
@@ -490,7 +539,8 @@ class MainWindow(QMainWindow):
             with open(filepath, 'r', encoding='utf-8-sig') as f:
                 lines = f.readlines()
         except Exception as e:
-            QMessageBox.warning(self, "错误", f"读取文件失败: {e}"); return
+            QMessageBox.warning(self, "错误", f"读取文件失败: {e}")
+            return False
         tl = []
         for line in lines:
             line = line.strip()
@@ -509,37 +559,39 @@ class MainWindow(QMainWindow):
         if tl:
             self.add_targets(tl)
             self.status_label.setText(f"从文件载入了 {len(tl)} 个目标")
+            return True
+        QMessageBox.information(self, "提示", "文件中没有有效的 Ping 目标")
+        return False
 
     def delete_selected(self):
-        rows = set(idx.row() for idx in self.table.selectedIndexes())
-        if not rows:
+        targets = self._selected_targets()
+        if not targets:
             return
-        # 按对象身份删除，排序后视觉行号不再影响正确性
-        to_delete = {id(t) for t in (self._target_at_row(r) for r in rows) if t}
-        # 原地更新，保证运行中的 PingWorker 继续引用同一个目标列表
-        self.targets[:] = [t for t in self.targets if id(t) not in to_delete]
-        self.refresh_table(); self.update_count()
+        # 模型原地更新列表，保证运行中的 PingWorker 继续引用同一对象。
+        self.table_model.remove_targets(targets)
+        self.update_count()
 
     def clear_all(self):
         if not self.targets:
             return
         if QMessageBox.question(self, "确认", "确定要清空所有目标吗?") == QMessageBox.Yes:
-            self.stop_monitoring(); self.targets.clear()
-            self.refresh_table(); self.update_count()
+            self.stop_monitoring()
+            self.table_model.clear_targets()
+            self.update_count()
             self.status_label.setText("已清空所有目标")
 
     def reset_stats(self):
-        for t in self.targets:
-            t.reset()
-        self.refresh_table(); self.status_label.setText("统计数据已重置")
+        for target in self.targets:
+            target.reset()
+        self.table_model.notify_all(4, 17)
+        self.status_label.setText("统计数据已重置")
 
     def toggle_selected(self, enabled):
-        rows = set(idx.row() for idx in self.table.selectedIndexes())
-        for r in rows:
-            t = self._target_at_row(r)
-            if t:
-                t.is_running = enabled
-        self.refresh_table()
+        targets = self._selected_targets()
+        for target in targets:
+            target.is_running = enabled
+        self.table_model.notify_targets(targets)
+        self.update_count()
 
     def start_monitoring(self):
         if not self.targets:
@@ -586,27 +638,36 @@ class MainWindow(QMainWindow):
         for target, result in results:
             if result.success:
                 target.update_success(result.rtt, result.ttl)
+                if result.response_address:
+                    target.response_address = result.response_address
             else:
                 target.update_fail(result.error or "失败", result.rtt)
-        self.refresh_table(); self.update_count()
+        self.table_model.notify_targets((target for target, _ in results), 4, 17)
+        self.update_count()
 
     def on_log_message(self, msg):
         self.status_label.setText(msg)
 
     def _highlight_row(self, row):
         """监控列非中心区域被点击时，仅高亮整行，不改变复选框状态。"""
-        if 0 <= row < self.table.rowCount():
+        if 0 <= row < self.proxy_model.rowCount():
             self.table.clearSelection()
             self.table.selectRow(row)
 
-    def _on_item_changed(self, item):
-        """处理 checkbox 状态变化（按绑定的目标对象，排序后仍正确）"""
-        if item.column() == 0:
-            t = item.data(Qt.UserRole)
-            if t is None:
-                t = self._target_at_row(item.row())
-            if t is not None:
-                t.selected = (item.checkState() == Qt.Checked)
+    def _target_from_index(self, index):
+        """把排序后的视图索引映射为稳定的目标对象。"""
+        return index.data(TARGET_ROLE) if index.isValid() else None
+
+    def _selected_targets(self):
+        """按当前视觉顺序返回去重后的选中目标。"""
+        targets = []
+        seen = set()
+        for index in sorted(self.table.selectedIndexes(), key=lambda item: item.row()):
+            target = self._target_from_index(index)
+            if target is not None and id(target) not in seen:
+                seen.add(id(target))
+                targets.append(target)
+        return targets
 
     def copy_selected_cells(self):
         """按行列顺序复制选中单元格；多单元格使用制表符和换行分隔"""
@@ -621,11 +682,11 @@ class MainWindow(QMainWindow):
         for row in range(min_row, max_row + 1):
             values = []
             for col in range(min_col, max_col + 1):
-                item = self.table.item(row, col)
-                values.append(item.text() if (row, col) in selected and item else "")
+                index = self.proxy_model.index(row, col)
+                value = index.data(Qt.DisplayRole) if (row, col) in selected else ""
+                values.append("" if value is None else str(value))
             lines.append("\t".join(values))
-        text = "\n".join(lines)
-        QApplication.clipboard().setText(text)
+        QApplication.clipboard().setText("\n".join(lines))
         self.status_label.setText(f"已复制 {len(indexes)} 个单元格")
 
     def _show_context_menu(self, pos):
@@ -642,7 +703,10 @@ class MainWindow(QMainWindow):
 
         if not self.table.selectionModel().isSelected(index):
             self.table.clearSelection()
-            self.table.setCurrentCell(index.row(), index.column())
+            self.table.setCurrentIndex(index)
+        context_target = self._target_from_index(index)
+        act_details = menu.addAction("详情...")
+        menu.addSeparator()
         act_copy = menu.addAction("复制单元格内容")
         menu.addSeparator()
         act_add = menu.addAction("添加目标...")
@@ -659,7 +723,9 @@ class MainWindow(QMainWindow):
         act_export = menu.addAction("导出结果...")
 
         action = menu.exec_(self.table.viewport().mapToGlobal(pos))
-        if action == act_copy:
+        if action == act_details and context_target is not None:
+            TargetDetailsDialog(context_target, self).exec_()
+        elif action == act_copy:
             self.copy_selected_cells()
         elif action == act_add:
             self.add_targets_dialog()
@@ -670,131 +736,13 @@ class MainWindow(QMainWindow):
         elif action == act_disable:
             self.toggle_selected(False)
         elif action == act_check_all:
-            for t in self.targets:
-                t.selected = True
-            self.refresh_table()
+            self.table_model.set_all_checked(True)
         elif action == act_uncheck_all:
-            for t in self.targets:
-                t.selected = False
-            self.refresh_table()
+            self.table_model.set_all_checked(False)
         elif action == act_mac:
             self.query_mac_addresses()
         elif action == act_export:
             self.export_results("csv")
-
-    def refresh_table(self):
-        # 以目标对象身份+列保存选择，避免排序/复用 item 后选择漂移到其他目标
-        selected = set()
-        for index in self.table.selectedIndexes():
-            target = self._target_at_row(index.row())
-            if target is not None:
-                selected.add((id(target), index.column()))
-
-        self.table.blockSignals(True)
-        sorting = self.table.isSortingEnabled()
-        header = self.table.horizontalHeader()
-        sort_col = header.sortIndicatorSection()
-        sort_order = header.sortIndicatorOrder()
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(self.targets))
-        for row, s in enumerate(self.targets):
-            self._set_row(row, s)
-        self.table.setSortingEnabled(sorting)
-        if sorting and sort_col >= 0:
-            self.table.sortItems(sort_col, sort_order)
-
-        self.table.clearSelection()
-        for row in range(self.table.rowCount()):
-            target = self._target_at_row(row)
-            if target is None:
-                continue
-            for col in range(self.table.columnCount()):
-                if (id(target), col) in selected:
-                    item = self.table.item(row, col)
-                    if item:
-                        item.setSelected(True)
-        self.table.blockSignals(False)
-
-    def _target_at_row(self, row):
-        """按视觉行号取目标对象（排序后仍正确）；优先读第0列 UserRole 中绑定的对象"""
-        item = self.table.item(row, 0)
-        if item is not None:
-            t = item.data(Qt.UserRole)
-            if t is not None:
-                return t
-        return self.targets[row] if 0 <= row < len(self.targets) else None
-
-    def _set_row(self, row, s):
-        # 第0列：复选框（复用已有 item，避免每次刷新都新建）
-        cb_item = self.table.item(row, 0)
-        if cb_item is None:
-            cb_item = QTableWidgetItem()
-            cb_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-            cb_item.setTextAlignment(Qt.AlignCenter)
-            cb_item.setToolTip("勾选后可按勾选范围导出；与行选择相互独立")
-            self.table.setItem(row, 0, cb_item)
-        # 绑定目标对象，排序后仍能映射回正确的目标
-        cb_item.setData(Qt.UserRole, s)
-        cb_item.setCheckState(Qt.Checked if s.selected else Qt.Unchecked)
-        # 第1列起：数据
-        self._nc(row, 1, str(row + 1), row + 1)                           # 序号（数值排序）
-        self._c(row, 2, s.address)                                        # 地址
-        self._c(row, 3, f"TCP:{s.tcp_port}" if s.ping_mode == "TCP" else s.ping_mode)  # Ping方式
-        st = s.status_text                                                # 状态
-        item = self._c(row, 4, st)
-        if st == "成功":
-            item.setForeground(QColor("#4CAF50"))
-        elif st == "失败":
-            item.setForeground(QColor("#f44336"))
-        elif st == "等待中":
-            item.setForeground(QColor("#FF9800"))
-        self._nc(row, 5, f"{s.last_rtt:.2f}" if s.last_rtt is not None else "-", s.last_rtt)    # 响应时间
-        self._nc(row, 6, f"{s.loss_rate:.1f}", s.loss_rate)                              # 丢包率
-        self._nc(row, 7, str(s.success_count), s.success_count)                         # 成功
-        self._nc(row, 8, str(s.fail_count), s.fail_count)                              # 失败
-        self._nc(row, 9, f"{s.avg_rtt:.2f}" if s.avg_rtt is not None else "-", s.avg_rtt)     # 平均
-        self._nc(row, 10, f"{s.min_rtt:.2f}" if s.min_rtt is not None else "-", s.min_rtt)    # 最小
-        self._nc(row, 11, f"{s.max_rtt:.2f}" if s.max_rtt is not None else "-", s.max_rtt)    # 最大
-        self._nc(row, 12, str(s.last_ttl) if s.last_ttl is not None else "-", s.last_ttl)      # TTL
-        self._c(row, 13, s.last_success_time or "-")                      # 最近成功时间
-        self._c(row, 14, s.last_fail_time or "-")                         # 最近失败时间
-        self._c(row, 15, s.mac_address or "-")                            # MAC地址
-        self._c(row, 16, s.resolved_ip or "-")                            # 解析地址
-        self._c(row, 17, s.last_error or "")                             # 错误信息
-        # 每次刷新明确恢复默认颜色，避免禁用后重新启用仍永久灰色
-        if s.is_running:
-            for col in range(1, self.table.columnCount()):
-                it = self.table.item(row, col)
-                if it and col != 4:
-                    it.setForeground(QColor("#263238"))
-        else:
-            for col in range(1, self.table.columnCount()):
-                it = self.table.item(row, col)
-                if it:
-                    it.setForeground(QColor("#999999"))
-
-    def _c(self, row, col, text):
-        """文本单元格：仅在内容变化时更新，减少重绘开销"""
-        item = self.table.item(row, col)
-        if item is None:
-            item = QTableWidgetItem(text); self.table.setItem(row, col, item)
-        elif item.text() != text:
-            item.setText(text)
-        return item
-
-    def _nc(self, row, col, text, value):
-        """数值单元格：显示文本 text，按真实数值 value 排序（缺失值排末尾）。仅在变化时更新"""
-        item = self.table.item(row, col)
-        if item is None or not isinstance(item, NumericTableWidgetItem):
-            item = NumericTableWidgetItem(text)
-            self.table.setItem(row, col, item)
-            item.setData(Qt.UserRole, value)
-        else:
-            if item.text() != text:
-                item.setText(text)
-            if item.data(Qt.UserRole) != value:
-                item.setData(Qt.UserRole, value)
-        return item
 
     def update_count(self):
         total = len(self.targets)
@@ -805,11 +753,9 @@ class MainWindow(QMainWindow):
         if not self.targets:
             QMessageBox.information(self, "提示", "没有目标可查询"); return
         # 优先查询选中的条目；未选中则查询全部启用中的目标
-        rows = set(idx.row() for idx in self.table.selectedIndexes())
-        if rows:
-            candidates = [t for t in (self._target_at_row(r) for r in rows) if t]
-        else:
-            candidates = [s for s in self.targets if s.is_running]
+        candidates = self._selected_targets()
+        if not candidates:
+            candidates = [target for target in self.targets if target.is_running]
         if not candidates:
             self.status_label.setText("没有可查询的目标"); return
         self.status_label.setText(f"正在后台查询 {len(candidates)} 个目标的 MAC 地址...")
@@ -818,9 +764,9 @@ class MainWindow(QMainWindow):
         self._start_bg_worker(worker)
 
     def _on_mac_done(self, results):
-        for t, mac in results:
-            t.mac_address = mac
-        self.refresh_table()
+        for target, mac in results:
+            target.mac_address = mac
+        self.table_model.notify_targets((target for target, _ in results), 15, 15)
         if results:
             self.status_label.setText(f"MAC 地址查询完成（获取 {len(results)} 个）")
         else:
@@ -854,10 +800,10 @@ class MainWindow(QMainWindow):
         if not self.targets:
             QMessageBox.information(self, "提示", "没有数据可导出"); return
 
-        # 获取表格选中的行和勾选的目标
-        selected_rows = sorted(set(idx.row() for idx in self.table.selectedIndexes()))
-        selected_count = len(selected_rows)
-        checked_count = sum(1 for t in self.targets if t.selected)
+        # 获取表格选中的目标和勾选的目标
+        selected_targets = self._selected_targets()
+        selected_count = len(selected_targets)
+        checked_count = sum(1 for target in self.targets if target.selected)
 
         # 弹出导出选择对话框
         dlg = ExportSelectionDialog(self, len(self.targets), selected_count, checked_count)
@@ -868,9 +814,7 @@ class MainWindow(QMainWindow):
         if mode == "checked":
             targets_to_export = [t for t in self.targets if t.selected]
         elif mode == "selected" and selected_count > 0:
-            # 按视觉行映射到目标对象，排序后仍导出正确目标
-            targets_to_export = [t for t in
-                                 (self._target_at_row(r) for r in selected_rows) if t]
+            targets_to_export = selected_targets
         else:
             targets_to_export = self.targets
 
@@ -942,7 +886,15 @@ class MainWindow(QMainWindow):
             if not self._close_pending:
                 self._close_pending = True
                 self.stop_monitoring()
+                for worker in self._bg_workers:
+                    stop = getattr(worker, "stop", None)
+                    if stop:
+                        stop()
                 self.status_label.setText("正在结束后台任务，完成后自动关闭...")
             QTimer.singleShot(200, self.close)
             return
+        app = QApplication.instance()
+        windows = getattr(app, "_pinginfo_windows", []) if app else []
+        if self in windows:
+            windows.remove(self)
         event.accept()

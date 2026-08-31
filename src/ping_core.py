@@ -23,6 +23,7 @@ class PingResult:
     rtt: Optional[float] = None       # 响应时间（毫秒）
     ttl: Optional[int] = None         # TTL 值
     error: Optional[str] = None       # 错误信息
+    response_address: Optional[str] = None  # 实际响应的 IP 地址
 
 
 # 单次展开的最大 IP 数量上限，防止 CIDR/范围展开耗尽内存
@@ -124,6 +125,28 @@ def _parse_ping_output(output: str, is_windows: bool = False) -> PingResult:
                 return PingResult(success=False, error=match.group(0))
         return PingResult(success=False, error="Ping 失败")
 
+    # 提取实际响应 IP，兼容 host (IP)、IPv4、IPv6 和中英文输出。
+    response_address = None
+    candidates = re.findall(r'\(([0-9a-fA-F:.%]+)\)', output)
+    for pattern in (
+            r'bytes from\s+(\[?[0-9a-fA-F:.%]+\]?:?)',
+            r'Reply from\s+(\[?[0-9a-fA-F:.%]+\]?:?)',
+            r'来自\s*(\[?[0-9a-fA-F:.%]+\]?)\s*的回复'):
+        match = re.search(pattern, output, re.IGNORECASE)
+        if match:
+            candidates.append(match.group(1))
+    for candidate in candidates:
+        candidate = candidate.strip('[]')
+        for value in (candidate, candidate[:-1] if candidate.endswith(':') else candidate):
+            try:
+                ipaddress.ip_address(value.split('%', 1)[0])
+                response_address = value
+                break
+            except ValueError:
+                continue
+        if response_address:
+            break
+
     # 提取 RTT（响应时间），兼容英文 "time=10.5 ms" 与中文 Windows "时间=10ms"/"时间<1ms"
     rtt_patterns = [
         r'time[=<]\s*([\d.]+)\s*ms',   # time=10ms / time<1ms
@@ -152,7 +175,8 @@ def _parse_ping_output(output: str, is_windows: bool = False) -> PingResult:
             except ValueError:
                 pass
 
-    return PingResult(success=True, rtt=rtt, ttl=ttl)
+    return PingResult(success=True, rtt=rtt, ttl=ttl,
+                      response_address=response_address)
 
 
 def icmp_ping(host: str, timeout: int = 3, packet_size: int = 56, ttl: int = 0) -> PingResult:
@@ -210,9 +234,11 @@ def tcp_ping(host: str, port: int, timeout: int = 3) -> PingResult:
         # create_connection 自动处理 IPv4/IPv6
         sock = socket.create_connection((host, port), timeout=timeout)
         rtt = (time.time() - start_time) * 1000
+        response_address = sock.getpeername()[0]
         sock.close()
         sock = None  # 置 None，避免 finally 中重复 close
-        return PingResult(success=True, rtt=round(rtt, 2))
+        return PingResult(success=True, rtt=round(rtt, 2),
+                          response_address=response_address)
     except socket.timeout:
         return PingResult(success=False, error="连接超时")
     except ConnectionRefusedError:

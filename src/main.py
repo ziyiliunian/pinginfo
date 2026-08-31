@@ -47,6 +47,8 @@ def main():
     window = MainWindow()
     if not app_icon.isNull():
         window.setWindowIcon(app_icon)
+    # 每次启动先收集目标；取消时仍进入空白主窗口，用户可稍后添加。
+    window.add_targets_dialog()
     window.show()
     sys.exit(app.exec_())
 

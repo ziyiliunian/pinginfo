@@ -7,7 +7,8 @@
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QSpinBox, QRadioButton, QButtonGroup, QTextEdit, QPushButton,
-    QGroupBox, QFileDialog, QMessageBox, QApplication, QMenu
+    QGroupBox, QFileDialog, QMessageBox, QApplication, QMenu,
+    QDialogButtonBox, QScrollArea, QWidget
 )
 from PyQt5.QtCore import Qt
 from .ping_core import expand_ip_range, parse_host_port
@@ -171,6 +172,80 @@ class AddTargetsDialog(QDialog):
 
     def get_targets(self):
         return self.targets
+
+
+class TargetDetailsDialog(QDialog):
+    """显示单个目标的完整实时统计信息。"""
+
+    def __init__(self, target, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"目标详情 - {target.address}")
+        self.setMinimumSize(520, 560)
+        self._init_ui(target)
+
+    @staticmethod
+    def _text(value, suffix=""):
+        if value is None or value == "":
+            return "-"
+        return f"{value}{suffix}"
+
+    def _init_ui(self, target):
+        layout = QVBoxLayout(self)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        content = QWidget(scroll)
+        form = QFormLayout(content)
+        response_address = target.response_address or "-"
+        ping_method = (f"TCP:{target.tcp_port}" if target.ping_mode == "TCP"
+                       else target.ping_mode)
+        history = ", ".join(
+            "失败" if value is None else f"{value:.2f} ms"
+            for value in target.rtt_history
+        ) or "-"
+        fields = (
+            ("主机名", target.hostname or "-"),
+            ("目标地址", target.address),
+            ("IP 地址", target.resolved_ip or
+             ("-" if target.hostname else target.address)),
+            ("响应地址", response_address),
+            ("Ping 方式", ping_method),
+            ("当前状态", target.status_text),
+            ("是否启用", "是" if target.is_running else "否"),
+            ("总请求次数", target.total_count),
+            ("成功次数", target.success_count),
+            ("失败次数", target.fail_count),
+            ("丢包率", f"{target.loss_rate:.1f}%"),
+            ("最近响应时间", self._text(
+                f"{target.last_rtt:.2f}" if target.last_rtt is not None else None,
+                " ms")),
+            ("平均响应时间", self._text(
+                f"{target.avg_rtt:.2f}" if target.avg_rtt is not None else None,
+                " ms")),
+            ("最小响应时间", self._text(
+                f"{target.min_rtt:.2f}" if target.min_rtt is not None else None,
+                " ms")),
+            ("最大响应时间", self._text(
+                f"{target.max_rtt:.2f}" if target.max_rtt is not None else None,
+                " ms")),
+            ("TTL", self._text(target.last_ttl)),
+            ("MAC 地址", self._text(target.mac_address)),
+            ("最近成功时间", self._text(target.last_success_time)),
+            ("最近失败时间", self._text(target.last_fail_time)),
+            ("最近错误", self._text(target.last_error)),
+            ("最近 20 次结果", history),
+        )
+        for name, value in fields:
+            label = QLabel(str(value))
+            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            label.setWordWrap(True)
+            label.setStyleSheet("padding: 3px; color: #263238;")
+            form.addRow(f"{name}:", label)
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.button(QDialogButtonBox.Close).setText("关闭")
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
 
 class SettingsDialog(QDialog):

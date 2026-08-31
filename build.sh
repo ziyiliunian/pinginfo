@@ -7,7 +7,7 @@ set -e
 cd "$(dirname "$0")"
 
 APP_NAME="pinginfo"
-VERSION=$(python3 -c "import src; print(src.__version__)")
+VERSION=$(PYTHONDONTWRITEBYTECODE=1 python3 -c "import src; print(src.__version__)")
 if [ -n "${1:-}" ] && [ "$1" != "$VERSION" ]; then
     echo "错误: 传入版本 $1 与源码版本 $VERSION 不一致"
     exit 1
@@ -33,6 +33,8 @@ cp -r packaging/* "$PKGROOT/"
 # 复制源码（保持 src/ 包结构，启动器通过 /opt/pinginfo/src 导入）
 mkdir -p "$PKGROOT/opt/${APP_NAME}"
 cp -r src "$PKGROOT/opt/${APP_NAME}/src"
+find "$PKGROOT/opt/${APP_NAME}/src" -type f -name '*.pyc' -delete
+find "$PKGROOT/opt/${APP_NAME}/src" -type d -name '__pycache__' -empty -delete
 
 # 图标已作为静态资源纳入 packaging，构建时无需 PyQt5
 ICON="$PKGROOT/usr/share/icons/hicolor/256x256/apps/${APP_NAME}.png"
