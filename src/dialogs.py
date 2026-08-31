@@ -7,10 +7,9 @@
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QSpinBox, QRadioButton, QButtonGroup, QTextEdit, QPushButton,
-    QGroupBox, QFileDialog, QMessageBox, QApplication, QShortcut, QMenu
+    QGroupBox, QFileDialog, QMessageBox, QApplication, QMenu
 )
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QKeySequence
 from .ping_core import expand_ip_range, parse_host_port
 
 
@@ -119,12 +118,8 @@ class AddTargetsDialog(QDialog):
         btn_box.addWidget(btn_cancel)
         layout.addLayout(btn_box)
 
-        # 确保文本框获得焦点并支持 Ctrl+V 粘贴
+        # QTextEdit 原生支持 Ctrl+V；不重复注册快捷键，避免一次粘贴触发多次
         self.text_edit.setFocus()
-        shortcut_paste = QShortcut(QKeySequence("Ctrl+V"), self.text_edit)
-        shortcut_paste.activated.connect(self._paste_content)
-        shortcut_paste2 = QShortcut(QKeySequence("Ctrl+V"), self)
-        shortcut_paste2.activated.connect(self._paste_content)
 
     def _paste_content(self):
         """粘贴剪贴板内容到文本框"""
@@ -140,7 +135,7 @@ class AddTargetsDialog(QDialog):
         )
         if filepath:
             try:
-                with open(filepath, 'r', encoding='utf-8') as f:
+                with open(filepath, 'r', encoding='utf-8-sig') as f:
                     self.text_edit.setPlainText(f.read())
             except Exception as e:
                 QMessageBox.warning(self, "错误", f"读取文件失败: {e}")
@@ -161,6 +156,12 @@ class AddTargetsDialog(QDialog):
             host, port, valid = parse_host_port(line, tcp_port)
             if not valid:
                 QMessageBox.warning(self, "格式错误", f"无效的目标或端口: {line}")
+                return
+            has_explicit_port = (line.startswith('[') and ']:' in line) or (
+                line.count(':') == 1 and line.rsplit(':', 1)[1].isdigit())
+            if has_explicit_port and ping_mode != "TCP":
+                QMessageBox.warning(self, "格式错误",
+                    f"带端口的目标必须选择 TCP Ping: {line}")
                 return
             # 展开 IP 范围 (如 192.168.0.10-201 或 192.168.0.0/24)
             expanded = expand_ip_range(host)

@@ -163,8 +163,8 @@ def icmp_ping(host: str, timeout: int = 3, packet_size: int = 56, ttl: int = 0) 
     ttl: TTL 起始值，0 表示使用系统默认
     """
     is_win = platform.system() == "Windows"
-    # packet_size: 0 或 56 均表示使用系统默认，不传 -s/-l 参数
-    use_default_size = packet_size in (0, 56)
+    # 只有 0 表示系统默认；Windows 默认负载为 32，设置 56 时必须显式传 -l 56
+    use_default_size = packet_size == 0
 
     if is_win:
         cmd = ['ping', '-n', '1', '-w', str(timeout * 1000)]

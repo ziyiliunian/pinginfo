@@ -47,16 +47,17 @@ def _get_mac_ip_neigh(ip: str) -> Optional[str]:
             )
             if mac_match:
                 return mac_match.group(0).upper()
-    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass
     return None
 
 
 def _get_mac_arp(ip: str) -> Optional[str]:
-    """使用 arp -n 命令查询 MAC 地址"""
+    """使用平台对应的 arp 命令查询 MAC 地址。"""
+    cmd = ['arp', '-a', ip] if platform.system() == 'Windows' else ['arp', '-n', ip]
     try:
         result = subprocess.run(
-            ['arp', '-n', ip],
+            cmd,
             capture_output=True,
             text=True,
             timeout=3
@@ -72,7 +73,7 @@ def _get_mac_arp(ip: str) -> Optional[str]:
             )
             if mac_match:
                 return mac_match.group(0).upper()
-    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass
     return None
 

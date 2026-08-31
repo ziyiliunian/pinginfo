@@ -6,7 +6,9 @@
 
 import csv
 import html
+import io
 import os
+import tempfile
 import time
 from xml.etree import ElementTree as ET
 from xml.dom import minidom
@@ -35,17 +37,42 @@ EXPORT_COLUMNS = [
 ]
 
 
+def _atomic_write(filepath, data, binary=False):
+    """同目录临时写入后原子替换，失败时保留原文件。"""
+    directory = os.path.dirname(os.path.abspath(filepath)) or '.'
+    fd, temp_path = tempfile.mkstemp(prefix='.pinginfo-', dir=directory)
+    try:
+        mode = 'wb' if binary else 'w'
+        kwargs = {} if binary else {'encoding': 'utf-8', 'newline': ''}
+        with os.fdopen(fd, mode, **kwargs) as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, filepath)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _xml_safe(value):
+    """过滤 XML 1.0 禁止的控制字符。"""
+    text = '' if value is None else str(value)
+    return ''.join(ch for ch in text if ch in '\t\n\r' or ord(ch) >= 0x20)
+
+
 def export_txt(stats_list, filepath: str) -> bool:
     """导出为 TXT 格式"""
     try:
-        with open(filepath, 'w', encoding='utf-8') as f:
-            header = " | ".join(label for _, label in EXPORT_COLUMNS)
-            f.write(header + "\n")
-            f.write("=" * len(header) + "\n")
-            for stats in stats_list:
-                data = stats.to_dict()
-                row = " | ".join(str(data.get(key, "")) for key, _ in EXPORT_COLUMNS)
-                f.write(row + "\n")
+        parts = []
+        header = " | ".join(label for _, label in EXPORT_COLUMNS)
+        parts.extend((header, "=" * len(header)))
+        for stats in stats_list:
+            data = stats.to_dict()
+            parts.append(" | ".join(str(data.get(key, "")) for key, _ in EXPORT_COLUMNS))
+        _atomic_write(filepath, "\n".join(parts) + "\n")
         return True
     except Exception as e:
         print(f"导出 TXT 失败: {e}")
@@ -63,13 +90,14 @@ def _safe_csv_value(value):
 def export_csv(stats_list, filepath: str) -> bool:
     """导出为 CSV 格式"""
     try:
-        with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([label for _, label in EXPORT_COLUMNS])
-            for stats in stats_list:
-                data = stats.to_dict()
-                writer.writerow([_safe_csv_value(data.get(key, ""))
-                                 for key, _ in EXPORT_COLUMNS])
+        buffer = io.StringIO(newline='')
+        writer = csv.writer(buffer)
+        writer.writerow([label for _, label in EXPORT_COLUMNS])
+        for stats in stats_list:
+            data = stats.to_dict()
+            writer.writerow([_safe_csv_value(data.get(key, ""))
+                             for key, _ in EXPORT_COLUMNS])
+        _atomic_write(filepath, '\ufeff' + buffer.getvalue())
         return True
     except Exception as e:
         print(f"导出 CSV 失败: {e}")
@@ -128,8 +156,7 @@ def export_html(stats_list, filepath: str) -> bool:
         parts.append("</body>")
         parts.append("</html>")
 
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write("\n".join(parts))
+        _atomic_write(filepath, "\n".join(parts))
         return True
     except Exception as e:
         print(f"导出 HTML 失败: {e}")
@@ -148,14 +175,13 @@ def export_xml(stats_list, filepath: str) -> bool:
             target_elem = ET.SubElement(root, "Target")
             for key, _ in EXPORT_COLUMNS:
                 elem = ET.SubElement(target_elem, key)
-                elem.text = str(data.get(key, ""))
+                elem.text = _xml_safe(data.get(key, ""))
 
         rough_string = ET.tostring(root, encoding='unicode')
         dom = minidom.parseString(rough_string)
         pretty_xml = dom.toprettyxml(indent="  ", encoding='utf-8')
 
-        with open(filepath, 'wb') as f:
-            f.write(pretty_xml)
+        _atomic_write(filepath, pretty_xml, binary=True)
         return True
     except Exception as e:
         print(f"导出 XML 失败: {e}")

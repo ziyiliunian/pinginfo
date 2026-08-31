@@ -8,7 +8,7 @@
 packaging/
 ├── DEBIAN/
 │   ├── control        # 包元信息（名称、版本、依赖、架构等）
-│   ├── postinst       # 安装后脚本（编译字节码、刷新桌面缓存）
+│   ├── postinst       # 安装后脚本（刷新桌面/图标缓存）
 │   └── postrm         # 卸载后脚本（清理桌面缓存）
 ├── usr/
 │   ├── bin/
@@ -21,8 +21,8 @@ packaging/
 └── README.md          # 本文件
 ```
 
-> 注意：`packaging/opt/pinginfo/` 目录下的 Python 源码由 `build.sh`
-> 在打包时自动复制生成，不需手工维护。程序安装后位于 `/opt/pinginfo`。
+> 注意：Python 源码由 `build.sh` 复制到独立临时包根，不会写入或污染
+> `packaging/` 骨架。程序安装后位于 `/opt/pinginfo`。
 
 ## 依赖
 
@@ -30,27 +30,21 @@ packaging/
 - `python3-pyqt5`
 - （可选）`python3-pip`，用于安装非系统源的额外 Python 依赖
 
-## 手动构建 deb 包
+## 构建 deb 包
+
+推荐直接运行根目录脚本（需 `python3` 与 `dpkg-deb`）：
 
 ```bash
-# 1. 复制源码到打包目录
-mkdir -p packaging/opt/pinginfo/src
-cp -r src/* packaging/opt/pinginfo/src/
-
-# 2. 设置脚本权限
-chmod 755 packaging/DEBIAN/postinst packaging/DEBIAN/postrm
-chmod 755 packaging/usr/bin/pinginfo
-
-# 3. 构建 deb（需 dpkg-dev）
-dpkg-deb --build --root-owner-group packaging pinginfo_1.1.6_all.deb
+./build.sh 1.2.0
 ```
 
-或直接运行根目录的 `build.sh` 一键完成以上步骤。
+脚本会从 `src.__version__` 读取版本、校验传入版本一致性，在 `build/`
+创建临时包根并输出到 `dist/`。不要直接向 `packaging/` 写入源码。
 
 ## 安装与卸载
 
 ```bash
-sudo dpkg -i pinginfo_1.1.6_all.deb
+sudo dpkg -i pinginfo_1.2.0_all.deb
 sudo apt-get install -f   # 若依赖未满足，自动修复
 
 # 卸载
