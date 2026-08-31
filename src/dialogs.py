@@ -235,13 +235,53 @@ class TargetDetailsDialog(QDialog):
             ("最近 20 次结果", history),
         )
         for name, value in fields:
+            name_label = QLabel(f"{name}:")
+            name_label.setStyleSheet(
+                "padding: 6px; border: 1px solid #cfd8dc; "
+                "background: #f5f7f9; font-weight: 600;")
             label = QLabel(str(value))
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             label.setWordWrap(True)
-            label.setStyleSheet("padding: 3px; color: #263238;")
-            form.addRow(f"{name}:", label)
+            label.setStyleSheet(
+                "padding: 6px; color: #263238; border: 1px solid #cfd8dc; "
+                "background: white;")
+            form.addRow(name_label, label)
         scroll.setWidget(content)
         layout.addWidget(scroll)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.button(QDialogButtonBox.Close).setText("关闭")
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
+class MacResultsDialog(QDialog):
+    """逐项显示选中目标的 MAC 地址查询结果。"""
+
+    def __init__(self, targets, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("MAC 地址查询结果")
+        self.setMinimumSize(620, 420)
+        layout = QVBoxLayout(self)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        content = QWidget(scroll)
+        form = QFormLayout(content)
+        for target in targets:
+            address = target.resolved_ip or target.address
+            name = QLabel(f"{target.sequence_number}. {target.address} ({address})")
+            name.setStyleSheet(
+                "padding: 7px; border: 1px solid #cfd8dc; "
+                "background: #f5f7f9; font-weight: 600;")
+            value = QLabel(target.mac_address or "未获取到")
+            value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            value.setStyleSheet(
+                "padding: 7px; border: 1px solid #cfd8dc; background: white;")
+            form.addRow(name, value)
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+        note = QLabel("提示：通常只能获取同一局域网且可达主机的 MAC 地址。")
+        note.setStyleSheet("color: #607d8b; padding: 4px;")
+        layout.addWidget(note)
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.button(QDialogButtonBox.Close).setText("关闭")
         buttons.rejected.connect(self.reject)

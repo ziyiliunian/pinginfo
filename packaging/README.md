@@ -35,7 +35,7 @@ packaging/
 推荐直接运行根目录脚本（需 `python3` 与 `dpkg-deb`）：
 
 ```bash
-./build.sh 1.3.0
+./build.sh 1.4.0
 ```
 
 脚本会从 `src.__version__` 读取版本、校验传入版本一致性，在 `build/`
@@ -44,7 +44,7 @@ packaging/
 ## 安装与卸载
 
 ```bash
-sudo dpkg -i pinginfo_1.3.0_all.deb
+sudo dpkg -i pinginfo_1.4.0_all.deb
 sudo apt-get install -f   # 若依赖未满足，自动修复
 
 # 卸载

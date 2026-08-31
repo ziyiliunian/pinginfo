@@ -30,7 +30,8 @@ class TargetStats:
     last_fail_time: Optional[str] = None
     mac_address: Optional[str] = None
     is_running: bool = True
-    selected: bool = True           # 是否被勾选（用于导出选择）
+    selected: bool = False          # 是否被勾选（用于导出选择）
+    sequence_number: int = 0        # 固定序号，不随排序变化
     last_error: Optional[str] = None
     resolved_ip: Optional[str] = None  # 解析地址：当 address 为域名时存储解析后的 IPv4
     response_address: Optional[str] = None  # 最近一次实际响应的 IP 地址
@@ -116,6 +117,7 @@ class TargetStats:
     def to_dict(self) -> dict:
         """转换为字典（用于导出）"""
         return {
+            "sequence_number": self.sequence_number,
             "address": self.address,
             "ping_mode": self.ping_mode,
             "tcp_port": self.tcp_port,

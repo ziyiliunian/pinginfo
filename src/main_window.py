@@ -5,10 +5,12 @@ import time
 from PyQt5.QtWidgets import (
     QMainWindow, QTableView, QAction, QStatusBar,
     QFileDialog, QMessageBox, QDialog, QLabel, QSpinBox, QHeaderView,
-    QAbstractItemView, QProgressBar, QMenu, QApplication,
+    QAbstractItemView, QMenu, QApplication,
     QStyledItemDelegate, QStyleOptionButton, QStyleOptionViewItem, QStyle
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QEvent, QRect, QTimer
+from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QSize, QEvent, QRect, QTimer,
+                          QMimeData, QPoint)
+from PyQt5.QtGui import QDrag
 from PyQt5.QtGui import QColor, QDragEnterEvent, QDropEvent, QKeySequence, QPen
 from concurrent.futures import (FIRST_COMPLETED, ThreadPoolExecutor, wait)
 from .data_models import TargetStats
@@ -18,7 +20,7 @@ from .ping_core import (ping_batch, resolve_to_ipv4, resolve_hostname,
 from .arp_lookup import get_mac_address
 from .exporters import export_results
 from .dialogs import (AddTargetsDialog, SettingsDialog, ExportSelectionDialog,
-                      TargetDetailsDialog)
+                      MacResultsDialog, TargetDetailsDialog)
 from .table_model import COLUMNS, TARGET_ROLE, TargetSortProxyModel, TargetTableModel
 
 
@@ -249,6 +251,79 @@ class CenteredCheckBoxDelegate(QStyledItemDelegate):
         return model.setData(index, new_state, Qt.CheckStateRole)
 
 
+class MonitorHeaderView(QHeaderView):
+    """监控列作为全选按钮，其余列保留标准排序行为。"""
+
+    monitor_clicked = pyqtSignal()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self.logicalIndexAt(event.pos()) == 0:
+            self.monitor_clicked.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
+class TargetTableView(QTableView):
+    """支持序号/监控列整行选择及目标拖动排序。"""
+
+    targets_reordered = pyqtSignal(object, object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._drag_start = QPoint()
+        self._drag_target = None
+
+    def mousePressEvent(self, event):
+        index = self.indexAt(event.pos())
+        if event.button() == Qt.LeftButton and index.isValid() and index.column() in (0, 1):
+            self.clearSelection()
+            self.selectRow(index.row())
+            self.setCurrentIndex(index)
+            self._drag_start = event.pos()
+            self._drag_target = index.data(TARGET_ROLE)
+        else:
+            self._drag_target = None
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (event.buttons() & Qt.LeftButton and self._drag_target is not None and
+                (event.pos() - self._drag_start).manhattanLength() >=
+                QApplication.startDragDistance()):
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setData("application/x-pinginfo-target-row", b"move")
+            drag.setMimeData(mime)
+            drag.exec_(Qt.MoveAction)
+            return
+        super().mouseMoveEvent(event)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat("application/x-pinginfo-target-row"):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat("application/x-pinginfo-target-row"):
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        source_target = self._drag_target
+        target_index = self.indexAt(event.pos())
+        self._drag_target = None
+        target_target = (target_index.data(TARGET_ROLE)
+                         if target_index.isValid() else None)
+        if (source_target is not None and target_target is not None and
+                source_target is not target_target):
+            self.targets_reordered.emit(source_target, target_target)
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -285,9 +360,15 @@ class MainWindow(QMainWindow):
         self.table_model = TargetTableModel(self.targets, self)
         self.proxy_model = TargetSortProxyModel(self)
         self.proxy_model.setSourceModel(self.table_model)
-        self.table = QTableView()
+        self.table = TargetTableView()
         self.table.setModel(self.proxy_model)
+        self.table.targets_reordered.connect(self._reorder_targets)
+        self.table.setHorizontalHeader(MonitorHeaderView(Qt.Horizontal, self.table))
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.clicked.connect(self._select_row_from_index)
+        self.table.setDragEnabled(True)
+        self.table.setAcceptDrops(True)
+        self.table.setDragDropMode(QAbstractItemView.InternalMove)
         # 按单元格选择，解析地址、MAC 等内容可独立复制
         self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -339,10 +420,11 @@ class MainWindow(QMainWindow):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
         header = self.table.horizontalHeader()
+        header.monitor_clicked.connect(self._monitor_header_clicked)
         for idx, _, width in COLUMNS:
             header.resizeSection(idx, width)
         header.setStretchLastSection(True)
-        header.setSectionResizeMode(17, QHeaderView.Stretch)
+        header.setSectionResizeMode(16, QHeaderView.Stretch)
         self.table.setSortingEnabled(True)
         self.setCentralWidget(self.table)
 
@@ -402,21 +484,20 @@ class MainWindow(QMainWindow):
         a = QAction("删除选中", self); a.triggered.connect(self.delete_selected); tb.addAction(a)
         a = QAction("清空全部", self); a.triggered.connect(self.clear_all); tb.addAction(a)
         tb.addSeparator()
-        a = QAction("查询MAC", self); a.triggered.connect(self.query_mac_addresses); tb.addAction(a)
-        tb.addSeparator()
         a = QAction("导出CSV", self); a.triggered.connect(lambda: self.export_results("csv")); tb.addAction(a)
 
     def _init_statusbar(self):
         self.status_bar = QStatusBar(); self.setStatusBar(self.status_bar)
         self.status_label = QLabel("就绪"); self.status_bar.addWidget(self.status_label)
-        self.count_label = QLabel("目标数: 0"); self.status_bar.addPermanentWidget(self.count_label)
-        self.progress = QProgressBar(); self.progress.setMaximumWidth(200)
-        self.progress.setVisible(False); self.status_bar.addPermanentWidget(self.progress)
+        self.count_label = QLabel("目标数: 0    启用数: 0")
+        self.status_bar.addPermanentWidget(self.count_label)
 
     def add_targets(self, target_list):
         # 用集合做 O(1) 去重；键含端口，避免 host:80 与 host:443 被误去重
         existing = {(t.address, t.ping_mode, t.tcp_port) for t in self.targets}
         added = []
+        next_sequence = max(
+            (target.sequence_number for target in self.targets), default=0) + 1
         for host, mode, port in target_list:
             host = normalize_host(host)  # 清理协议前缀/路径等，统一入口规范化
             if not host:
@@ -426,11 +507,13 @@ class MainWindow(QMainWindow):
             t = TargetStats(
                 address=host,
                 hostname=host if not is_ip_address(host) else "",
+                sequence_number=next_sequence,
                 ping_mode=mode,
                 tcp_port=port,
             )
             existing.add((host, mode, port))
             added.append(t)
+            next_sequence += 1
         if not added:
             return
         self.table_model.append_targets(added)
@@ -453,7 +536,7 @@ class MainWindow(QMainWindow):
                 target.resolved_ip = ip
             if hostname:
                 target.hostname = hostname
-        self.table_model.notify_targets((result[0] for result in results), 16, 16)
+        self.table_model.notify_targets((result[0] for result in results), 15, 15)
         self.status_label.setText(f"已解析 {len(results)} 个目标")
 
     def _start_bg_worker(self, worker):
@@ -583,7 +666,7 @@ class MainWindow(QMainWindow):
     def reset_stats(self):
         for target in self.targets:
             target.reset()
-        self.table_model.notify_all(4, 17)
+        self.table_model.notify_all(4, 16)
         self.status_label.setText("统计数据已重置")
 
     def toggle_selected(self, enabled):
@@ -604,7 +687,6 @@ class MainWindow(QMainWindow):
         self.worker.log_message.connect(self.on_log_message)
         self.worker.start()
         self.act_start.setEnabled(False); self.act_stop.setEnabled(True)
-        self.progress.setVisible(True); self.progress.setRange(0, 0)
 
     def stop_monitoring(self):
         """非阻塞请求停止；旧线程真正结束前不允许启动新监控。"""
@@ -625,7 +707,6 @@ class MainWindow(QMainWindow):
             if self.worker is worker:
                 self.worker = None
             self.act_start.setEnabled(True)
-            self.progress.setVisible(False)
             self.status_label.setText("监控已停止")
             worker.deleteLater()
 
@@ -642,7 +723,7 @@ class MainWindow(QMainWindow):
                     target.response_address = result.response_address
             else:
                 target.update_fail(result.error or "失败", result.rtt)
-        self.table_model.notify_targets((target for target, _ in results), 4, 17)
+        self.table_model.notify_targets((target for target, _ in results), 4, 16)
         self.update_count()
 
     def on_log_message(self, msg):
@@ -653,6 +734,33 @@ class MainWindow(QMainWindow):
         if 0 <= row < self.proxy_model.rowCount():
             self.table.clearSelection()
             self.table.selectRow(row)
+
+    def _select_row_from_index(self, index):
+        if index.isValid() and index.column() in (0, 1):
+            self._highlight_row(index.row())
+
+    def _monitor_header_clicked(self):
+        """点击“监控”表头，在全选和全部取消之间切换。"""
+        if not self.targets:
+            return
+        self.table_model.set_all_checked(
+            not all(target.selected for target in self.targets))
+
+    def _reorder_targets(self, source_target, target_target):
+        """按当前视觉顺序重排，固定序号不随位置变化。"""
+        if source_target is None or target_target is None or source_target is target_target:
+            return
+        visual_targets = [
+            self.proxy_model.index(row, 0).data(TARGET_ROLE)
+            for row in range(self.proxy_model.rowCount())
+        ]
+        source_row = visual_targets.index(source_target)
+        target_row = visual_targets.index(target_target)
+        visual_targets.insert(target_row, visual_targets.pop(source_row))
+        self.table_model.beginResetModel()
+        self.targets[:] = visual_targets
+        self.table_model.endResetModel()
+        self.proxy_model.sort(-1)
 
     def _target_from_index(self, index):
         """把排序后的视图索引映射为稳定的目标对象。"""
@@ -718,8 +826,6 @@ class MainWindow(QMainWindow):
         act_check_all = menu.addAction("全选勾选")
         act_uncheck_all = menu.addAction("取消全部勾选")
         menu.addSeparator()
-        act_mac = menu.addAction("查询 MAC 地址")
-        menu.addSeparator()
         act_export = menu.addAction("导出结果...")
 
         action = menu.exec_(self.table.viewport().mapToGlobal(pos))
@@ -739,8 +845,6 @@ class MainWindow(QMainWindow):
             self.table_model.set_all_checked(True)
         elif action == act_uncheck_all:
             self.table_model.set_all_checked(False)
-        elif action == act_mac:
-            self.query_mac_addresses()
         elif action == act_export:
             self.export_results("csv")
 
@@ -752,26 +856,27 @@ class MainWindow(QMainWindow):
     def query_mac_addresses(self):
         if not self.targets:
             QMessageBox.information(self, "提示", "没有目标可查询"); return
-        # 优先查询选中的条目；未选中则查询全部启用中的目标
         candidates = self._selected_targets()
         if not candidates:
-            candidates = [target for target in self.targets if target.is_running]
-        if not candidates:
-            self.status_label.setText("没有可查询的目标"); return
+            QMessageBox.information(self, "提示", "请先选中需要查询的主机行")
+            return
         self.status_label.setText(f"正在后台查询 {len(candidates)} 个目标的 MAC 地址...")
         worker = MacWorker(candidates)
-        worker.mac_done.connect(self._on_mac_done)
+        worker.mac_done.connect(
+            lambda results, targets=candidates: self._on_mac_done(results, targets))
         self._start_bg_worker(worker)
 
-    def _on_mac_done(self, results):
+    def _on_mac_done(self, results, queried_targets):
+        for target in queried_targets:
+            target.mac_address = None
         for target, mac in results:
             target.mac_address = mac
-        self.table_model.notify_targets((target for target, _ in results), 15, 15)
         if results:
             self.status_label.setText(f"MAC 地址查询完成（获取 {len(results)} 个）")
         else:
             self.status_label.setText(
                 "未获取到 MAC 地址（仅同一子网且可达的目标可查询）")
+        MacResultsDialog(queried_targets, self).exec_()
 
     def show_settings(self):
         dlg = SettingsDialog(self, self.ping_interval, self.max_workers,
@@ -794,7 +899,11 @@ class MainWindow(QMainWindow):
             "<ul><li>支持 ICMP Ping 和 TCP Ping</li><li>支持 IPv4 / IPv6</li>"
             "<li>批量目标管理和实时监控</li><li>响应时间、丢包率、延迟统计</li>"
             "<li>TTL、MAC 地址查询</li><li>导出 TXT / CSV / HTML / XML</li></ul>"
-            "<p>支持拖放文本文件导入地址</p>")
+            "<p>支持拖放文本文件导入地址</p>"
+            "<hr><p><b>作者：</b>ziyiliunian<br>"
+            "<b>邮箱：</b><a href='mailto:316878142@qq.com'>316878142@qq.com</a><br>"
+            "<b>项目地址：</b><a href='https://github.com/ziyiliunian/pinginfo'>"
+            "https://github.com/ziyiliunian/pinginfo</a></p>")
 
     def export_results(self, fmt):
         if not self.targets:

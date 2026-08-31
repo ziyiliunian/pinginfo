@@ -11,7 +11,7 @@ COLUMNS = [
     (6, "丢包率(%)", 80), (7, "成功", 50), (8, "失败", 50),
     (9, "平均(ms)", 90), (10, "最小(ms)", 80), (11, "最大(ms)", 80),
     (12, "TTL", 50), (13, "最近成功时间", 150), (14, "最近失败时间", 150),
-    (15, "MAC地址", 130), (16, "解析地址", 130), (17, "错误信息", 200),
+    (15, "解析地址", 130), (16, "错误信息", 200),
 ]
 
 TARGET_ROLE = Qt.UserRole + 1
@@ -44,7 +44,7 @@ class TargetTableModel(QAbstractTableModel):
     def _display_value(target, row, column):
         values = (
             "",
-            str(row + 1),
+            str(target.sequence_number or row + 1),
             target.address,
             f"TCP:{target.tcp_port}" if target.ping_mode == "TCP" else target.ping_mode,
             target.status_text,
@@ -58,7 +58,6 @@ class TargetTableModel(QAbstractTableModel):
             str(target.last_ttl) if target.last_ttl is not None else "-",
             target.last_success_time or "-",
             target.last_fail_time or "-",
-            target.mac_address or "-",
             target.resolved_ip or "-",
             target.last_error or "",
         )
@@ -68,7 +67,7 @@ class TargetTableModel(QAbstractTableModel):
     def _sort_value(target, row, column):
         values = (
             target.selected,
-            row + 1,
+            target.sequence_number or row + 1,
             target.address.casefold(),
             (f"TCP:{target.tcp_port}" if target.ping_mode == "TCP"
              else target.ping_mode).casefold(),
@@ -83,7 +82,6 @@ class TargetTableModel(QAbstractTableModel):
             target.last_ttl,
             target.last_success_time,
             target.last_fail_time,
-            target.mac_address.casefold() if target.mac_address else None,
             target.resolved_ip.casefold() if target.resolved_ip else None,
             target.last_error.casefold() if target.last_error else None,
         )
