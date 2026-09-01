@@ -55,15 +55,15 @@ class TargetStats:
     @property
     def status_text(self) -> str:
         """状态文本"""
+        if not self.is_running:
+            return "已停止"
         if self.total_count == 0:
             return "等待中"
-        if self.is_running:
-            if self.last_error is None and self.last_rtt is not None:
-                return "成功"
-            elif self.last_error is not None:
-                return "失败"
-            return "运行中"
-        return "已停止"
+        if self.last_error is None and self.last_rtt is not None:
+            return "成功"
+        if self.last_error is not None:
+            return "失败"
+        return "运行中"
 
     def update_success(self, rtt: Optional[float], ttl: Optional[int] = None):
         """更新成功结果。rtt 为 None 时（如解析失败）仅计数，不参与统计运算"""

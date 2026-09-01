@@ -10,6 +10,7 @@ else:
     from .main_window import MainWindow
 
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QFont, QIcon
 
 
@@ -47,9 +48,9 @@ def main():
     window = MainWindow()
     if not app_icon.isNull():
         window.setWindowIcon(app_icon)
-    # 每次启动先收集目标；取消时仍进入空白主窗口，用户可稍后添加。
-    window.add_targets_dialog()
+    # 主界面和添加目标弹窗同时可见，取消后保留空白主窗口。
     window.show()
+    QTimer.singleShot(0, window.add_targets_dialog)
     sys.exit(app.exec_())
 
 

@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QStyledItemDelegate, QStyleOptionButton, QStyleOptionViewItem, QStyle
 )
 from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QSize, QEvent, QRect, QTimer,
-                          QMimeData, QPoint)
+                          QItemSelectionModel, QMimeData, QPoint)
 from PyQt5.QtGui import QDrag
 from PyQt5.QtGui import QColor, QDragEnterEvent, QDropEvent, QKeySequence, QPen
 from concurrent.futures import (FIRST_COMPLETED, ThreadPoolExecutor, wait)
@@ -197,9 +197,10 @@ class RowSelectionDelegate(QStyledItemDelegate):
 
 
 class CenteredCheckBoxDelegate(QStyledItemDelegate):
-    """居中绘制复选框：点击中心切换，点击外围空白高亮整行。"""
+    """监控列居中复选框，支持对高亮多行统一勾选。"""
 
     row_select_requested = pyqtSignal(int)
+    check_requested = pyqtSignal(object, int)
 
     @staticmethod
     def _indicator_rect(style, option):
@@ -248,20 +249,40 @@ class CenteredCheckBoxDelegate(QStyledItemDelegate):
         elif not keyboard_toggle:
             return False
         new_state = Qt.Unchecked if index.data(Qt.CheckStateRole) == Qt.Checked else Qt.Checked
-        return model.setData(index, new_state, Qt.CheckStateRole)
+        self.check_requested.emit(index, new_state)
+        return True
 
 
 class MonitorHeaderView(QHeaderView):
-    """监控列作为全选按钮，其余列保留标准排序行为。"""
+    """监控列触发全选，其余列显式请求排序，不触发表头列选择。"""
 
     monitor_clicked = pyqtSignal()
+    sort_requested = pyqtSignal(int)
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self._pressed_section = -1
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and self.logicalIndexAt(event.pos()) == 0:
-            self.monitor_clicked.emit()
+        if event.button() == Qt.LeftButton:
+            self._pressed_section = self.logicalIndexAt(event.pos())
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        section = self.logicalIndexAt(event.pos())
+        pressed_section = self._pressed_section
+        self._pressed_section = -1
+        if (event.button() == Qt.LeftButton and section >= 0 and
+                section == pressed_section):
+            if section == 0:
+                self.monitor_clicked.emit()
+            else:
+                self.sort_requested.emit(section)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class TargetTableView(QTableView):
@@ -276,15 +297,25 @@ class TargetTableView(QTableView):
 
     def mousePressEvent(self, event):
         index = self.indexAt(event.pos())
-        if event.button() == Qt.LeftButton and index.isValid() and index.column() in (0, 1):
-            self.clearSelection()
-            self.selectRow(index.row())
-            self.setCurrentIndex(index)
+        row_click = (event.button() == Qt.LeftButton and index.isValid() and
+                     index.column() == 0)
+        if row_click:
             self._drag_start = event.pos()
             self._drag_target = index.data(TARGET_ROLE)
+            row_already_highlighted = any(
+                selected.row() == index.row() for selected in self.selectedIndexes())
+            if row_already_highlighted:
+                # 保留其他列框选出的多行范围，便于随后批量勾选。
+                self.setCurrentIndex(index)
+                event.accept()
+                return
         else:
             self._drag_target = None
         super().mousePressEvent(event)
+        if row_click:
+            self.clearSelection()
+            self.selectRow(index.row())
+            self.setCurrentIndex(index)
 
     def mouseMoveEvent(self, event):
         if (event.buttons() & Qt.LeftButton and self._drag_target is not None and
@@ -335,6 +366,7 @@ class MainWindow(QMainWindow):
         self.worker = None
         self._bg_workers = []   # 后台线程（DNS 解析 / MAC 查询）引用
         self._child_windows = []  # 保持本窗口创建的新窗口引用
+        self._selected_target_ids = set()  # 按对象身份保存按钮操作目标
         self._close_pending = False
         app = QApplication.instance()
         if app is not None:
@@ -362,13 +394,15 @@ class MainWindow(QMainWindow):
         self.proxy_model.setSourceModel(self.table_model)
         self.table = TargetTableView()
         self.table.setModel(self.proxy_model)
+        self.table.selectionModel().selectionChanged.connect(
+            self._remember_selected_targets)
         self.table.targets_reordered.connect(self._reorder_targets)
         self.table.setHorizontalHeader(MonitorHeaderView(Qt.Horizontal, self.table))
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.clicked.connect(self._select_row_from_index)
-        self.table.setDragEnabled(True)
+        # 仅监控列由 TargetTableView 手工启动拖动；其他列保留鼠标批量选择。
+        self.table.setDragEnabled(False)
         self.table.setAcceptDrops(True)
-        self.table.setDragDropMode(QAbstractItemView.InternalMove)
+        self.table.setDragDropMode(QAbstractItemView.DropOnly)
         # 按单元格选择，解析地址、MAC 等内容可独立复制
         self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -379,6 +413,7 @@ class MainWindow(QMainWindow):
         self.table.setItemDelegate(RowSelectionDelegate(self.table))
         monitor_delegate = CenteredCheckBoxDelegate(self.table)
         monitor_delegate.row_select_requested.connect(self._highlight_row)
+        monitor_delegate.check_requested.connect(self._set_monitor_checked)
         self.table.setItemDelegateForColumn(0, monitor_delegate)
         self.table.setStyleSheet("""
             QTableView {
@@ -421,11 +456,14 @@ class MainWindow(QMainWindow):
         self.table.customContextMenuRequested.connect(self._show_context_menu)
         header = self.table.horizontalHeader()
         header.monitor_clicked.connect(self._monitor_header_clicked)
+        header.sort_requested.connect(self._sort_by_column)
+        header.setSortIndicatorShown(True)
+        header.setSortIndicator(-1, Qt.AscendingOrder)
+        header.setSectionsClickable(True)
         for idx, _, width in COLUMNS:
             header.resizeSection(idx, width)
         header.setStretchLastSection(True)
         header.setSectionResizeMode(16, QHeaderView.Stretch)
-        self.table.setSortingEnabled(True)
         self.setCentralWidget(self.table)
 
     def _init_menu(self):
@@ -453,13 +491,13 @@ class MainWindow(QMainWindow):
         a = QAction("复制选中单元格", self); a.setShortcut(QKeySequence.Copy)
         a.triggered.connect(self.copy_selected_cells); edm.addAction(a)
         edm.addSeparator()
-        a = QAction("删除选中行", self); a.setShortcut("Delete")
+        a = QAction("删除勾选目标", self); a.setShortcut("Delete")
         a.triggered.connect(self.delete_selected); edm.addAction(a)
         a = QAction("清空全部", self); a.triggered.connect(self.clear_all); edm.addAction(a)
         a = QAction("重置统计数据", self); a.triggered.connect(self.reset_stats); edm.addAction(a)
         edm.addSeparator()
-        a = QAction("启用选中", self); a.triggered.connect(lambda: self.toggle_selected(True)); edm.addAction(a)
-        a = QAction("禁用选中", self); a.triggered.connect(lambda: self.toggle_selected(False)); edm.addAction(a)
+        a = QAction("启用勾选目标", self); a.triggered.connect(lambda: self.toggle_selected(True)); edm.addAction(a)
+        a = QAction("禁用勾选目标", self); a.triggered.connect(lambda: self.toggle_selected(False)); edm.addAction(a)
 
         pm = mb.addMenu("Ping(&P)")
         self.act_start = QAction("开始监控", self); self.act_start.setShortcut("F5")
@@ -508,6 +546,7 @@ class MainWindow(QMainWindow):
                 address=host,
                 hostname=host if not is_ip_address(host) else "",
                 sequence_number=next_sequence,
+                selected=not self.targets,
                 ping_mode=mode,
                 tcp_port=port,
             )
@@ -586,17 +625,19 @@ class MainWindow(QMainWindow):
             windows.remove(window)
 
     def reload_targets_dialog(self):
-        """在独立的新窗口中添加目标，不修改当前窗口。"""
+        """显示独立新窗口，并在该窗口上添加目标。"""
         window = self._create_independent_window()
+        window.show()
         dialog = AddTargetsDialog(window)
-        if dialog.exec_() == QDialog.Accepted and dialog.get_targets():
+        if dialog.exec_() == QDialog.Accepted:
             targets = dialog.get_targets()
-            window.add_targets(targets)
-            window.status_label.setText(f"已添加 {len(targets)} 个目标")
-            window.show()
-        else:
-            self._forget_child_window(window)
-            window.deleteLater()
+            if targets:
+                before = len(window.targets)
+                window.add_targets(targets)
+                added = len(window.targets) - before
+                window.status_label.setText(f"已添加 {added} 个目标")
+                return
+        window.close()
 
     def reload_from_file(self):
         """在独立的新窗口中载入文件，不修改当前窗口。"""
@@ -605,12 +646,11 @@ class MainWindow(QMainWindow):
         if not filepath:
             return
         window = self._create_independent_window()
+        window.show()
         if window._load_file(filepath):
-            window.show()
             window.status_label.setText("已从文件载入目标")
         else:
-            self._forget_child_window(window)
-            window.deleteLater()
+            window.close()
 
     def load_from_file(self):
         fp, _ = QFileDialog.getOpenFileName(self, "选择地址文件", "", "文本文件 (*.txt);;所有文件 (*)")
@@ -647,12 +687,15 @@ class MainWindow(QMainWindow):
         return False
 
     def delete_selected(self):
-        targets = self._selected_targets()
+        targets = self._checked_targets()
         if not targets:
+            self.status_label.setText("请先勾选需要删除的目标")
             return
         # 模型原地更新列表，保证运行中的 PingWorker 继续引用同一对象。
         self.table_model.remove_targets(targets)
+        self._selected_target_ids.clear()
         self.update_count()
+        self.status_label.setText(f"已删除 {len(targets)} 个目标")
 
     def clear_all(self):
         if not self.targets:
@@ -660,6 +703,7 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "确认", "确定要清空所有目标吗?") == QMessageBox.Yes:
             self.stop_monitoring()
             self.table_model.clear_targets()
+            self._selected_target_ids.clear()
             self.update_count()
             self.status_label.setText("已清空所有目标")
 
@@ -670,11 +714,16 @@ class MainWindow(QMainWindow):
         self.status_label.setText("统计数据已重置")
 
     def toggle_selected(self, enabled):
-        targets = self._selected_targets()
+        targets = self._checked_targets()
+        if not targets:
+            self.status_label.setText("请先勾选需要操作的目标")
+            return
         for target in targets:
             target.is_running = enabled
         self.table_model.notify_targets(targets)
         self.update_count()
+        action = "启用" if enabled else "禁用"
+        self.status_label.setText(f"已{action} {len(targets)} 个目标")
 
     def start_monitoring(self):
         if not self.targets:
@@ -716,28 +765,66 @@ class MainWindow(QMainWindow):
             finished()
 
     def on_batch_complete(self, results):
+        current_ids = {id(target) for target in self.targets}
+        applied = []
         for target, result in results:
+            # 删除、清空或本轮已禁用的目标不再接受在途 Ping 结果。
+            if id(target) not in current_ids or not target.is_running:
+                continue
             if result.success:
                 target.update_success(result.rtt, result.ttl)
                 if result.response_address:
                     target.response_address = result.response_address
             else:
                 target.update_fail(result.error or "失败", result.rtt)
-        self.table_model.notify_targets((target for target, _ in results), 4, 16)
+            applied.append(target)
+        self.table_model.notify_targets(applied, 4, 16)
         self.update_count()
 
     def on_log_message(self, msg):
         self.status_label.setText(msg)
 
+    def _sort_by_column(self, column):
+        """显式切换表头排序，并只恢复排序前明确选择的目标。"""
+        selected_ids = {id(target) for target in self._selected_targets()}
+        header = self.table.horizontalHeader()
+        current_column = self.proxy_model.sortColumn()
+        if current_column == column:
+            order = (Qt.DescendingOrder
+                     if self.proxy_model.sortOrder() == Qt.AscendingOrder
+                     else Qt.AscendingOrder)
+        else:
+            order = Qt.AscendingOrder
+        self.proxy_model.sort(column, order)
+        header.setSortIndicator(column, order)
+        self.table.clearSelection()
+        selection_model = self.table.selectionModel()
+        for row in range(self.proxy_model.rowCount()):
+            index = self.proxy_model.index(row, 0)
+            target = self._target_from_index(index)
+            if target is not None and id(target) in selected_ids:
+                selection_model.select(
+                    index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+        self._selected_target_ids = selected_ids
+
     def _highlight_row(self, row):
-        """监控列非中心区域被点击时，仅高亮整行，不改变复选框状态。"""
+        """监控列点击后高亮整行，不改变复选框状态。"""
         if 0 <= row < self.proxy_model.rowCount():
             self.table.clearSelection()
             self.table.selectRow(row)
 
-    def _select_row_from_index(self, index):
-        if index.isValid() and index.column() in (0, 1):
-            self._highlight_row(index.row())
+    def _set_monitor_checked(self, index, state):
+        """勾选监控列；若该行属于多行高亮，则批量应用到所有高亮行。"""
+        clicked_target = self._target_from_index(index)
+        if clicked_target is None:
+            return
+        highlighted = self._selected_targets()
+        targets = highlighted if clicked_target in highlighted else [clicked_target]
+        checked = state == Qt.Checked
+        changed = [target for target in targets if target.selected != checked]
+        for target in changed:
+            target.selected = checked
+        self.table_model.notify_targets(changed, 0, 0)
 
     def _monitor_header_clicked(self):
         """点击“监控”表头，在全选和全部取消之间切换。"""
@@ -757,25 +844,56 @@ class MainWindow(QMainWindow):
         source_row = visual_targets.index(source_target)
         target_row = visual_targets.index(target_target)
         visual_targets.insert(target_row, visual_targets.pop(source_row))
+        # 手工拖动接管当前视觉顺序，清除旧的代理排序，避免拖动后跳回旧顺序。
+        self.proxy_model.setDynamicSortFilter(False)
+        self.proxy_model.sort(-1)
         self.table_model.beginResetModel()
         self.targets[:] = visual_targets
         self.table_model.endResetModel()
-        self.proxy_model.sort(-1)
+        self.proxy_model.setDynamicSortFilter(True)
+        self.table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
+        for row in range(self.proxy_model.rowCount()):
+            index = self.proxy_model.index(row, 0)
+            if self._target_from_index(index) is source_target:
+                self.table.clearSelection()
+                self.table.selectRow(row)
+                self.table.setCurrentIndex(index)
+                break
 
     def _target_from_index(self, index):
         """把排序后的视图索引映射为稳定的目标对象。"""
         return index.data(TARGET_ROLE) if index.isValid() else None
 
+    def _remember_selected_targets(self, _selected=None, _deselected=None):
+        """记录当前选择对应的对象身份，不保存会随排序变化的视觉行号。"""
+        self._selected_target_ids = {
+            id(target)
+            for index in self.table.selectedIndexes()
+            for target in [self._target_from_index(index)]
+            if target is not None
+        }
+
+    def _checked_targets(self):
+        """返回监控列明确勾选的目标；所有目标操作统一使用此集合。"""
+        return [target for target in self.targets if target.selected]
+
     def _selected_targets(self):
-        """按当前视觉顺序返回去重后的选中目标。"""
-        targets = []
-        seen = set()
-        for index in sorted(self.table.selectedIndexes(), key=lambda item: item.row()):
-            target = self._target_from_index(index)
-            if target is not None and id(target) not in seen:
-                seen.add(id(target))
-                targets.append(target)
-        return targets
+        """按当前视觉顺序返回高亮目标，仅用于界面高亮恢复和复制。"""
+        current_ids = {
+            id(target)
+            for index in self.table.selectedIndexes()
+            for target in [self._target_from_index(index)]
+            if target is not None
+        }
+        if current_ids:
+            self._selected_target_ids = current_ids
+        valid_ids = {id(target) for target in self.targets}
+        selected_ids = self._selected_target_ids & valid_ids
+        return [
+            self.proxy_model.index(row, 0).data(TARGET_ROLE)
+            for row in range(self.proxy_model.rowCount())
+            if id(self.proxy_model.index(row, 0).data(TARGET_ROLE)) in selected_ids
+        ]
 
     def copy_selected_cells(self):
         """按行列顺序复制选中单元格；多单元格使用制表符和换行分隔"""
@@ -818,10 +936,10 @@ class MainWindow(QMainWindow):
         act_copy = menu.addAction("复制单元格内容")
         menu.addSeparator()
         act_add = menu.addAction("添加目标...")
-        act_del = menu.addAction("删除选中行")
+        act_del = menu.addAction("删除勾选目标")
         menu.addSeparator()
-        act_enable = menu.addAction("启用选中")
-        act_disable = menu.addAction("禁用选中")
+        act_enable = menu.addAction("启用勾选目标")
+        act_disable = menu.addAction("禁用勾选目标")
         menu.addSeparator()
         act_check_all = menu.addAction("全选勾选")
         act_uncheck_all = menu.addAction("取消全部勾选")
@@ -851,14 +969,14 @@ class MainWindow(QMainWindow):
     def update_count(self):
         total = len(self.targets)
         active = sum(1 for t in self.targets if t.is_running)
-        self.count_label.setText(f"目标数: {total} (启用: {active})")
+        self.count_label.setText(f"目标数: {total}    启用数: {active}")
 
     def query_mac_addresses(self):
         if not self.targets:
             QMessageBox.information(self, "提示", "没有目标可查询"); return
-        candidates = self._selected_targets()
+        candidates = self._checked_targets()
         if not candidates:
-            QMessageBox.information(self, "提示", "请先选中需要查询的主机行")
+            QMessageBox.information(self, "提示", "请先勾选需要查询的主机")
             return
         self.status_label.setText(f"正在后台查询 {len(candidates)} 个目标的 MAC 地址...")
         worker = MacWorker(candidates)
@@ -867,16 +985,25 @@ class MainWindow(QMainWindow):
         self._start_bg_worker(worker)
 
     def _on_mac_done(self, results, queried_targets):
-        for target in queried_targets:
+        current_ids = {id(target) for target in self.targets}
+        visible_targets = [target for target in queried_targets
+                           if id(target) in current_ids]
+        valid_results = [(target, mac) for target, mac in results
+                         if id(target) in current_ids]
+        for target in visible_targets:
             target.mac_address = None
-        for target, mac in results:
+        for target, mac in valid_results:
             target.mac_address = mac
-        if results:
-            self.status_label.setText(f"MAC 地址查询完成（获取 {len(results)} 个）")
+        if not visible_targets:
+            self.status_label.setText("MAC 查询目标已被删除")
+            return
+        if valid_results:
+            self.status_label.setText(
+                f"MAC 地址查询完成（获取 {len(valid_results)} 个）")
         else:
             self.status_label.setText(
                 "未获取到 MAC 地址（仅同一子网且可达的目标可查询）")
-        MacResultsDialog(queried_targets, self).exec_()
+        MacResultsDialog(visible_targets, self).exec_()
 
     def show_settings(self):
         dlg = SettingsDialog(self, self.ping_interval, self.max_workers,
@@ -909,23 +1036,16 @@ class MainWindow(QMainWindow):
         if not self.targets:
             QMessageBox.information(self, "提示", "没有数据可导出"); return
 
-        # 获取表格选中的目标和勾选的目标
-        selected_targets = self._selected_targets()
-        selected_count = len(selected_targets)
-        checked_count = sum(1 for target in self.targets if target.selected)
+        checked_targets = self._checked_targets()
+        checked_count = len(checked_targets)
 
-        # 弹出导出选择对话框
-        dlg = ExportSelectionDialog(self, len(self.targets), selected_count, checked_count)
+        # 导出范围只认监控复选框，高亮行不参与目标选择。
+        dlg = ExportSelectionDialog(self, len(self.targets), checked_count)
         if dlg.exec_() != QDialog.Accepted:
             return
 
         mode = dlg.get_export_mode()
-        if mode == "checked":
-            targets_to_export = [t for t in self.targets if t.selected]
-        elif mode == "selected" and selected_count > 0:
-            targets_to_export = selected_targets
-        else:
-            targets_to_export = self.targets
+        targets_to_export = checked_targets if mode == "checked" else self.targets
 
         if not targets_to_export:
             QMessageBox.information(self, "提示", "没有可导出的数据"); return

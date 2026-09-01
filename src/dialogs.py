@@ -353,17 +353,17 @@ class SettingsDialog(QDialog):
 
 
 class ExportSelectionDialog(QDialog):
-    """导出选择对话框 - 选择导出全部或选中的目标"""
-    def __init__(self, parent=None, total_count=0, selected_count=0, checked_count=0):
+    """导出选择对话框 - 仅区分全部目标和监控列勾选目标。"""
+    def __init__(self, parent=None, total_count=0, checked_count=0):
         super().__init__(parent)
         self.setWindowTitle("选择导出范围")
         self.setMinimumWidth(380)
-        self._init_ui(total_count, selected_count, checked_count)
+        self._init_ui(total_count, checked_count)
 
-    def _init_ui(self, total_count, selected_count, checked_count):
+    def _init_ui(self, total_count, checked_count):
         layout = QVBoxLayout(self)
 
-        info = QLabel(f"总目标数: {total_count}    表格选中: {selected_count} 行    勾选: {checked_count} 个")
+        info = QLabel(f"总目标数: {total_count}    已勾选: {checked_count} 个")
         info.setStyleSheet("font-size: 13px; color: #555;")
         layout.addWidget(info)
         layout.addSpacing(10)
@@ -371,20 +371,13 @@ class ExportSelectionDialog(QDialog):
         self.radio_all = QRadioButton(f"导出全部目标 ({total_count} 个)")
         self.radio_checked = QRadioButton(
             f"仅导出勾选目标 ({checked_count} 个)" if checked_count > 0
-            else "仅导出勾选目标 (未勾选任何行)"
-        )
-        self.radio_selected = QRadioButton(
-            f"仅导出表格选中行 ({selected_count} 行)" if selected_count > 0
-            else "仅导出表格选中行 (未选中任何行)"
+            else "仅导出勾选目标 (未勾选任何目标)"
         )
         self.radio_all.setChecked(True)
         if checked_count == 0:
             self.radio_checked.setEnabled(False)
-        if selected_count == 0:
-            self.radio_selected.setEnabled(False)
         layout.addWidget(self.radio_all)
         layout.addWidget(self.radio_checked)
-        layout.addWidget(self.radio_selected)
         layout.addSpacing(10)
 
         btn_box = QHBoxLayout()
@@ -398,9 +391,5 @@ class ExportSelectionDialog(QDialog):
         layout.addLayout(btn_box)
 
     def get_export_mode(self):
-        """返回导出模式: 'all', 'checked', 'selected'"""
-        if self.radio_checked.isChecked():
-            return "checked"
-        elif self.radio_selected.isChecked():
-            return "selected"
-        return "all"
+        """返回导出模式: 'all' 或 'checked'。"""
+        return "checked" if self.radio_checked.isChecked() else "all"
