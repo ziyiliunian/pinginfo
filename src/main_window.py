@@ -9,9 +9,8 @@ from PyQt5.QtWidgets import (
     QStyledItemDelegate, QStyleOptionButton, QStyleOptionViewItem, QStyle
 )
 from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QSize, QEvent, QRect, QTimer,
-                          QItemSelectionModel, QMimeData, QPoint)
-from PyQt5.QtGui import QDrag
-from PyQt5.QtGui import QColor, QDragEnterEvent, QDropEvent, QKeySequence, QPen
+                          QItemSelectionModel)
+from PyQt5.QtGui import QColor, QDragEnterEvent, QDropEvent, QKeySequence
 from concurrent.futures import (FIRST_COMPLETED, ThreadPoolExecutor, wait)
 from .data_models import TargetStats
 from .ping_core import (ping_batch, resolve_to_ipv4, resolve_hostname,
@@ -42,8 +41,8 @@ class PingWorker(QThread):
     def run(self):
         self.log_message.emit("开始监控...")
         while not self._stop:
-            # 每轮使用稳定快照；列表在 GUI 线程增删时不会影响本轮遍历
-            active = [t for t in list(self.targets) if t.is_running]
+            # targets 是点击“开始监控”时已勾选目标的稳定快照。
+            active = [target for target in self.targets if target.is_running]
             if active:
                 results = []
                 # 按并发上限分波执行，每波后检查停止请求
@@ -170,30 +169,13 @@ class MacWorker(QThread):
             self.mac_done.emit(results)
 
 
-def _draw_row_selection_frame(painter, option, index):
-    """为选中行绘制连续的上下边线，仅在首末列绘制左右边线。"""
-    if not (option.state & QStyle.State_Selected):
-        return
-    pen = painter.pen()
-    painter.setPen(QPen(QColor('#3978a8'), 2))
-    rect = option.rect.adjusted(0, 0, -1, -1)
-    painter.drawLine(rect.topLeft(), rect.topRight())
-    painter.drawLine(rect.bottomLeft(), rect.bottomRight())
-    if index.column() == 0:
-        painter.drawLine(rect.topLeft(), rect.bottomLeft())
-    if index.column() == index.model().columnCount() - 1:
-        painter.drawLine(rect.topRight(), rect.bottomRight())
-    painter.setPen(pen)
-
-
 class RowSelectionDelegate(QStyledItemDelegate):
-    """普通单元格委托：保留默认内容并为整行选中绘制外围框线。"""
+    """普通单元格委托：保留选中背景，但不绘制焦点或外围框线。"""
 
     def paint(self, painter, option, index):
         item_option = QStyleOptionViewItem(option)
         item_option.state &= ~QStyle.State_HasFocus
         super().paint(painter, item_option, index)
-        _draw_row_selection_frame(painter, option, index)
 
 
 class CenteredCheckBoxDelegate(QStyledItemDelegate):
@@ -231,7 +213,6 @@ class CenteredCheckBoxDelegate(QStyledItemDelegate):
         check_option.rect = self._indicator_rect(style, option)
         style.drawPrimitive(QStyle.PE_IndicatorCheckBox,
                             check_option, painter, option.widget)
-        _draw_row_selection_frame(painter, option, index)
 
     def editorEvent(self, event, model, option, index):
         if not (index.flags() & Qt.ItemIsUserCheckable):
@@ -262,8 +243,23 @@ class MonitorHeaderView(QHeaderView):
     def __init__(self, orientation, parent=None):
         super().__init__(orientation, parent)
         self._pressed_section = -1
+        self._resizing = False
+
+    def _near_resize_handle(self, pos):
+        section = self.logicalIndexAt(pos)
+        if section < 0:
+            return False
+        x = pos.x()
+        left = self.sectionViewportPosition(section)
+        right = left + self.sectionSize(section)
+        return abs(x - left) <= 4 or abs(x - right) <= 4
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._near_resize_handle(event.pos()):
+            self._resizing = True
+            self._pressed_section = -1
+            super().mousePressEvent(event)
+            return
         if event.button() == Qt.LeftButton:
             self._pressed_section = self.logicalIndexAt(event.pos())
             event.accept()
@@ -271,6 +267,10 @@ class MonitorHeaderView(QHeaderView):
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._resizing:
+            self._resizing = False
+            super().mouseReleaseEvent(event)
+            return
         section = self.logicalIndexAt(event.pos())
         pressed_section = self._pressed_section
         self._pressed_section = -1
@@ -286,73 +286,38 @@ class MonitorHeaderView(QHeaderView):
 
 
 class TargetTableView(QTableView):
-    """支持序号/监控列整行选择及目标拖动排序。"""
-
-    targets_reordered = pyqtSignal(object, object)
+    """监控列和序号列点击整行高亮，其他列保留标准批量选择。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._drag_start = QPoint()
-        self._drag_target = None
+        self._highlight_row_on_release = -1
 
     def mousePressEvent(self, event):
         index = self.indexAt(event.pos())
         row_click = (event.button() == Qt.LeftButton and index.isValid() and
-                     index.column() == 0)
-        if row_click:
-            self._drag_start = event.pos()
-            self._drag_target = index.data(TARGET_ROLE)
-            row_already_highlighted = any(
-                selected.row() == index.row() for selected in self.selectedIndexes())
-            if row_already_highlighted:
-                # 保留其他列框选出的多行范围，便于随后批量勾选。
-                self.setCurrentIndex(index)
-                event.accept()
-                return
-        else:
-            self._drag_target = None
+                     index.column() in (0, 1))
+        preserve_batch = (row_click and index.column() == 0 and any(
+            selected.row() == index.row() for selected in self.selectedIndexes()))
+        preserved_indexes = list(self.selectedIndexes()) if preserve_batch else []
+        self._highlight_row_on_release = -1
         super().mousePressEvent(event)
-        if row_click:
+        if preserve_batch:
+            # 让复选框收到完整鼠标事件，同时恢复按下前的多行高亮。
+            selection_model = self.selectionModel()
             self.clearSelection()
-            self.selectRow(index.row())
-            self.setCurrentIndex(index)
+            for selected in preserved_indexes:
+                selection_model.select(selected, QItemSelectionModel.Select)
+        elif row_click:
+            self._highlight_row_on_release = index.row()
 
-    def mouseMoveEvent(self, event):
-        if (event.buttons() & Qt.LeftButton and self._drag_target is not None and
-                (event.pos() - self._drag_start).manhattanLength() >=
-                QApplication.startDragDistance()):
-            drag = QDrag(self)
-            mime = QMimeData()
-            mime.setData("application/x-pinginfo-target-row", b"move")
-            drag.setMimeData(mime)
-            drag.exec_(Qt.MoveAction)
-            return
-        super().mouseMoveEvent(event)
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasFormat("application/x-pinginfo-target-row"):
-            event.acceptProposedAction()
-        else:
-            super().dragEnterEvent(event)
-
-    def dragMoveEvent(self, event):
-        if event.mimeData().hasFormat("application/x-pinginfo-target-row"):
-            event.acceptProposedAction()
-        else:
-            super().dragMoveEvent(event)
-
-    def dropEvent(self, event):
-        source_target = self._drag_target
-        target_index = self.indexAt(event.pos())
-        self._drag_target = None
-        target_target = (target_index.data(TARGET_ROLE)
-                         if target_index.isValid() else None)
-        if (source_target is not None and target_target is not None and
-                source_target is not target_target):
-            self.targets_reordered.emit(source_target, target_target)
-            event.acceptProposedAction()
-            return
-        event.ignore()
+    def mouseReleaseEvent(self, event):
+        row = self._highlight_row_on_release
+        self._highlight_row_on_release = -1
+        super().mouseReleaseEvent(event)
+        # Qt 会在释放阶段重新应用单元格选择，因此最后再确定整行高亮。
+        if row >= 0:
+            self.clearSelection()
+            self.selectRow(row)
 
 
 class MainWindow(QMainWindow):
@@ -364,6 +329,7 @@ class MainWindow(QMainWindow):
         self.resize(1400, 700)
         self.targets = []
         self.worker = None
+        self._stopping_worker = None
         self._bg_workers = []   # 后台线程（DNS 解析 / MAC 查询）引用
         self._child_windows = []  # 保持本窗口创建的新窗口引用
         self._selected_target_ids = set()  # 按对象身份保存按钮操作目标
@@ -396,13 +362,11 @@ class MainWindow(QMainWindow):
         self.table.setModel(self.proxy_model)
         self.table.selectionModel().selectionChanged.connect(
             self._remember_selected_targets)
-        self.table.targets_reordered.connect(self._reorder_targets)
         self.table.setHorizontalHeader(MonitorHeaderView(Qt.Horizontal, self.table))
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        # 仅监控列由 TargetTableView 手工启动拖动；其他列保留鼠标批量选择。
         self.table.setDragEnabled(False)
-        self.table.setAcceptDrops(True)
-        self.table.setDragDropMode(QAbstractItemView.DropOnly)
+        self.table.setAcceptDrops(False)
+        self.table.setDragDropMode(QAbstractItemView.NoDragDrop)
         # 按单元格选择，解析地址、MAC 等内容可独立复制
         self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -519,7 +483,7 @@ class MainWindow(QMainWindow):
         tb.setMovable(False); tb.setIconSize(QSize(24, 24))
         tb.addAction(self.act_start); tb.addAction(self.act_stop); tb.addSeparator()
         a = QAction("添加目标", self); a.triggered.connect(self.add_targets_dialog); tb.addAction(a)
-        a = QAction("删除选中", self); a.triggered.connect(self.delete_selected); tb.addAction(a)
+        a = QAction("删除勾选", self); a.triggered.connect(self.delete_selected); tb.addAction(a)
         a = QAction("清空全部", self); a.triggered.connect(self.clear_all); tb.addAction(a)
         tb.addSeparator()
         a = QAction("导出CSV", self); a.triggered.connect(lambda: self.export_results("csv")); tb.addAction(a)
@@ -570,13 +534,18 @@ class MainWindow(QMainWindow):
         self._start_bg_worker(worker)
 
     def _on_resolve_done(self, results):
-        for target, ip, hostname in results:
+        current_ids = {id(target) for target in self.targets}
+        valid_results = [result for result in results
+                         if id(result[0]) in current_ids]
+        for target, ip, hostname in valid_results:
             if ip:
                 target.resolved_ip = ip
             if hostname:
                 target.hostname = hostname
-        self.table_model.notify_targets((result[0] for result in results), 15, 15)
-        self.status_label.setText(f"已解析 {len(results)} 个目标")
+        self.table_model.notify_targets(
+            (result[0] for result in valid_results), 15, 15)
+        if valid_results:
+            self.status_label.setText(f"已解析 {len(valid_results)} 个目标")
 
     def _start_bg_worker(self, worker):
         """启动后台线程并持有引用，结束后安全清理。"""
@@ -691,7 +660,9 @@ class MainWindow(QMainWindow):
         if not targets:
             self.status_label.setText("请先勾选需要删除的目标")
             return
-        # 模型原地更新列表，保证运行中的 PingWorker 继续引用同一对象。
+        # 先停用对象，使监控线程快照下一轮立即跳过，再从模型移除。
+        for target in targets:
+            target.is_running = False
         self.table_model.remove_targets(targets)
         self._selected_target_ids.clear()
         self.update_count()
@@ -726,22 +697,27 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"已{action} {len(targets)} 个目标")
 
     def start_monitoring(self):
-        if not self.targets:
-            QMessageBox.information(self, "提示", "请先添加 Ping 目标"); return
+        checked_targets = [target for target in self._checked_targets()
+                           if target.is_running]
+        if not checked_targets:
+            QMessageBox.information(self, "提示", "请先勾选并启用需要监控的目标")
+            return
         if self.worker and self.worker.isRunning():
             return
-        self.worker = PingWorker(self.targets, self.ping_interval, self.max_workers,
-                                 self.ping_timeout, self.packet_size, self.icmp_ttl)
+        self.worker = PingWorker(list(checked_targets), self.ping_interval,
+                                 self.max_workers, self.ping_timeout,
+                                 self.packet_size, self.icmp_ttl)
         self.worker.batch_complete.connect(self.on_batch_complete)
         self.worker.log_message.connect(self.on_log_message)
         self.worker.start()
         self.act_start.setEnabled(False); self.act_stop.setEnabled(True)
 
     def stop_monitoring(self):
-        """非阻塞请求停止；旧线程真正结束前不允许启动新监控。"""
+        """幂等地请求停止；同一线程只注册一次结束处理。"""
         worker = self.worker
-        if not worker:
+        if not worker or self._stopping_worker is worker:
             return
+        self._stopping_worker = worker
         worker.stop()
         try:
             worker.batch_complete.disconnect(self.on_batch_complete)
@@ -755,6 +731,8 @@ class MainWindow(QMainWindow):
         def finished():
             if self.worker is worker:
                 self.worker = None
+            if self._stopping_worker is worker:
+                self._stopping_worker = None
             self.act_start.setEnabled(True)
             self.status_label.setText("监控已停止")
             worker.deleteLater()
@@ -832,33 +810,6 @@ class MainWindow(QMainWindow):
             return
         self.table_model.set_all_checked(
             not all(target.selected for target in self.targets))
-
-    def _reorder_targets(self, source_target, target_target):
-        """按当前视觉顺序重排，固定序号不随位置变化。"""
-        if source_target is None or target_target is None or source_target is target_target:
-            return
-        visual_targets = [
-            self.proxy_model.index(row, 0).data(TARGET_ROLE)
-            for row in range(self.proxy_model.rowCount())
-        ]
-        source_row = visual_targets.index(source_target)
-        target_row = visual_targets.index(target_target)
-        visual_targets.insert(target_row, visual_targets.pop(source_row))
-        # 手工拖动接管当前视觉顺序，清除旧的代理排序，避免拖动后跳回旧顺序。
-        self.proxy_model.setDynamicSortFilter(False)
-        self.proxy_model.sort(-1)
-        self.table_model.beginResetModel()
-        self.targets[:] = visual_targets
-        self.table_model.endResetModel()
-        self.proxy_model.setDynamicSortFilter(True)
-        self.table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
-        for row in range(self.proxy_model.rowCount()):
-            index = self.proxy_model.index(row, 0)
-            if self._target_from_index(index) is source_target:
-                self.table.clearSelection()
-                self.table.selectRow(row)
-                self.table.setCurrentIndex(index)
-                break
 
     def _target_from_index(self, index):
         """把排序后的视图索引映射为稳定的目标对象。"""

@@ -1,111 +1,293 @@
 # PingInfo - 批量 Ping 与实时监控工具
 
-类似 PingInfoView 的批量 Ping 监控软件，支持 ICMP/TCP Ping、IPv4/IPv6、实时统计和多种格式导出。
+PingInfo 是基于 Python 3 与 PyQt5 开发的桌面网络监控工具，支持批量 ICMP/TCP Ping、IPv4/IPv6、实时统计、目标详情、MAC 查询和多格式导出。
+
+- 当前版本：`1.5.1`
+- 项目地址：https://github.com/ziyiliunian/pinginfo
+- 支持平台：Debian/Ubuntu 系 Linux 桌面；源码可在安装 PyQt5 的兼容环境运行
 
 ## 功能特性
 
-### 批量目标管理
-- 支持同时添加数百甚至数千个 IP 地址或域名
-- 通过"文件 > 添加目标"手动输入
-- 通过"文件 > 从文件载入地址"批量导入（每行一个地址）
-- 支持直接拖放文本文件到主窗口
+### 目标管理
 
-### 灵活的 Ping 方式
-- **ICMP Ping**：通过系统 ping 命令发送 ICMP 数据包测试可达性
-- **TCP Ping**：测试特定端口的 TCP 连接（如 192.168.0.100:80）
-- **IPv6 支持**：自动支持 IPv6 地址的 Ping
+- 批量添加 IP 地址、IPv6 地址或域名
+- 支持单行地址、IP 范围和 CIDR
+- TCP 目标可使用 `host:port`，IPv6 端口使用 `[IPv6]:port`
+- 从 TXT 文件载入，每行一个目标，空行和 `#` 注释自动忽略
+- 支持将文本文件或地址文本拖放到主窗口导入
+- 自动去重，避免重复添加相同地址、Ping 方式和端口
+- 固定目标序号，排序不会改变地址原有序号
+- 支持删除、清空、启用、禁用和重置统计
 
-### 实时结果展示
-按设定间隔自动 Ping 所有目标，表格清晰呈现：
-- 响应时间（最近一次 Ping 耗时）
-- 丢包率（成功/失败次数及百分比）
-- 平均/最小/最大延迟
-- TTL（数据包生存时间）
-- 最近成功/失败时间
-- MAC 地址（同子网目标）
+### 多窗口任务
 
-### 便捷的结果导出
-支持 TXT、CSV、HTML、XML 四种格式导出。
+- 程序启动后先显示主窗口，再显示添加目标弹窗
+- “从新添加”会创建独立的新主窗口和目标列表
+- “从文件重新载入”会在独立新窗口中载入文件
+- 新窗口拥有独立的监控线程、统计数据和设置，不影响原窗口
+- 原窗口关闭后，其他任务窗口仍可继续运行
 
-## 使用方法
+### Ping 监控
 
-### 安装 deb 包
+- **ICMP Ping**：调用系统 `ping` 命令检测目标可达性
+- **TCP Ping**：检测指定 TCP 端口连接状态
+- 支持 IPv4、IPv6、域名解析和真实响应地址识别
+- 可设置监控间隔、最大并发数、超时、数据包大小和 TTL
+- 开始监控时只使用当前“监控”列中已勾选且已启用的目标
+- 未勾选有效目标时不会启动监控
+- 当前监控使用启动时的稳定目标快照；修改勾选范围后，停止并重新开始即可应用
+- 停止监控采用非阻塞流程，不冻结主界面
+- 删除正在监控的目标后，后台线程会停止继续 Ping 该目标
+
+### 实时统计
+
+主表格显示：
+
+- 固定序号
+- 目标地址
+- ICMP/TCP Ping 方式及 TCP 端口
+- 当前状态：等待中、运行中、成功、失败、已停止
+- 最近响应时间
+- 丢包率
+- 成功次数和失败次数
+- 平均、最小、最大响应时间
+- TTL
+- 最近成功时间和最近失败时间
+- 域名解析地址
+- 最近错误信息
+
+底部状态栏显示目标数和启用数。
+
+### 表格交互
+
+- 点击“监控”列或“序号”列可高亮完整一行
+- 其他数据列支持单元格选择和鼠标批量选择
+- 高亮仅用于视觉范围和复制，不等同于勾选目标
+- 新窗口首次添加的一批目标默认全部勾选
+- 后续追加的目标默认不勾选
+- 点击“监控”表头可全部勾选或全部取消
+- 高亮多行后点击其中一行的监控复选框，可批量勾选或取消这些行
+- 删除、启用、禁用、MAC 查询和“仅导出勾选目标”只认监控复选框
+- 点击表头可按列升序或降序排序
+- 数值列按真实数值排序，缺失值始终置底
+- 表头分隔线支持调整列宽
+- 支持复制单个或多个单元格，多单元格使用 TSV 格式
+- 为保证排序、选择和大批量刷新稳定性，不提供整行拖动排序
+
+### 目标详情
+
+在目标行上点击右键并选择“详情...”，可查看：
+
+- 主机名、目标地址、IP 地址和真实响应地址
+- Ping 方式和当前状态
+- 是否启用、总请求次数、成功次数和失败次数
+- 丢包率
+- 最近、平均、最小和最大响应时间
+- TTL 和 MAC 地址
+- 最近成功时间、最近失败时间和最近错误
+- 最近 20 次监控结果
+
+详情字段使用带边框列表显示，支持鼠标选择文本。
+
+### DNS 与 MAC 查询
+
+- 域名目标在后台解析 IPv4 地址
+- IP 目标在后台尝试反向解析主机名
+- DNS 操作具有超时，关闭窗口时不会无限阻塞
+- 已删除目标不会接收过期 DNS 结果
+- “工具 > 查询 MAC 地址”只查询当前已勾选目标
+- MAC 查询结果通过独立弹窗逐项显示，不占用主表列
+- 通常只能查询同一局域网内可达目标的 MAC 地址
+- 查询期间删除的目标不会出现在结果弹窗中
+
+### 结果导出
+
+支持以下格式：
+
+- TXT
+- CSV
+- HTML
+- XML
+
+导出范围：
+
+- 导出全部目标
+- 仅导出监控列已勾选目标
+
+导出内容包含固定序号、地址、Ping 方式、状态、响应统计、TTL、时间、MAC、解析地址、真实响应地址和错误信息。导出采用临时文件与原子替换，失败时不会破坏已有文件。
+
+## 安装
+
+### Debian/Ubuntu 安装包
+
 ```bash
-sudo dpkg -i pinginfo_1.5.0_all.deb
-# 若提示依赖未满足，执行：
+sudo dpkg -i dist/pinginfo_1.5.1_all.deb
 sudo apt-get install -f
 ```
-安装后在应用菜单搜索 "PingInfo" 即可启动，或在终端运行 `pinginfo`。
+
+安装后可在应用菜单搜索 `PingInfo`，或在终端运行：
+
+```bash
+pinginfo
+```
+
+运行依赖：
+
+- Python 3.8+
+- PyQt5 5.14+
+- `iputils-ping`
 
 ### 从源码运行
+
 ```bash
-pip install PyQt5
-python3 src/main.py
+python3 -m pip install -r requirements.txt
+python3 -m src.main
 ```
+
+## 基本使用
 
 ### 添加目标
-1. 菜单"文件 > 添加目标"或 Ctrl+N
-2. 选择 ICMP 或 TCP Ping 方式
-3. 每行输入一个 IP/域名，TCP 可带端口号（host:port）
-4. 或从文件导入（IP.txt 格式）
 
-### 开始监控
-- 按 F5 或点击"开始监控"
-- 在"Ping > Ping 选项设置"中调整间隔、并发数、超时
+1. 启动程序，主窗口显示后会自动打开添加目标弹窗。
+2. 选择 ICMP 或 TCP Ping。
+3. 每行输入一个 IP、IPv6 或域名。
+4. TCP 目标可设置统一端口，也可以直接输入 `host:port`。
+5. 点击“添加”后目标进入主表格。
+
+也可使用：
+
+- `文件 > 添加目标...`
+- `文件 > 从文件载入地址...`
+- 将文本文件或地址文本拖放到主窗口
+
+### 选择监控目标
+
+1. 勾选“监控”列中的目标。
+2. 点击“监控”表头可全部勾选或全部取消。
+3. 也可以先在其他列高亮多行，再点击其中一行监控框进行批量勾选。
+4. 高亮但未勾选的目标不会被删除、启停、查询 MAC 或按勾选范围导出。
+
+### 开始与停止
+
+- 按 `F5` 或使用“Ping > 开始监控”监控已勾选且已启用目标。
+- 按 `F6` 或使用“Ping > 停止监控”停止当前监控任务。
+- 修改勾选范围后，停止并重新开始监控以使用新范围。
 
 ### 快捷键
+
 | 快捷键 | 功能 |
-|--------|------|
-| Ctrl+N | 添加目标 |
-| Ctrl+O | 从文件载入 |
-| F5 | 开始监控 |
-| F6 | 停止监控 |
-| Delete | 删除选中行 |
-| Ctrl+Q | 退出 |
+|---|---|
+| `Ctrl+N` | 添加目标 |
+| `Ctrl+Shift+N` | 在新窗口重新添加目标 |
+| `Ctrl+O` | 从文件载入地址 |
+| `F5` | 开始监控已勾选目标 |
+| `F6` | 停止当前监控任务 |
+| `Delete` | 删除监控列已勾选目标 |
+| `Ctrl+C` | 复制选中单元格 |
+| `Ctrl+Q` | 退出当前窗口 |
 
-## 项目结构
-```
-pinginfo/
-├── src/                  # 源代码
-│   ├── main.py           # 主入口
-│   ├── main_window.py    # 主窗口 GUI
-│   ├── dialogs.py        # 对话框
-│   ├── data_models.py    # 数据模型
-│   ├── ping_core.py      # Ping 核心模块
-│   ├── arp_lookup.py     # MAC 地址查询
-│   ├── exporters.py      # 结果导出
-├── build/                # 构建中间文件
-├── packaging/            # deb 打包配置文件（control / desktop / 图标等）
-├── build.sh              # deb 打包脚本
-├── requirements.txt      # 依赖
-├── IP.txt                # 示例地址文件
-└── pinginfo_1.5.0_all.deb  # 打包后的 deb 安装包（架构无关 all）
-```
+## 菜单说明
 
-## 打包为 deb
+### 文件
 
-详见 `packaging/README.md`，或直接运行：
+- 添加目标
+- 从新添加（独立窗口）
+- 从文件载入地址
+- 从文件重新载入（独立窗口）
+- 导出 TXT、CSV、HTML、XML
+- 退出
+
+### 编辑
+
+- 删除勾选目标
+- 清空全部目标
+- 重置统计数据
+- 启用勾选目标
+- 禁用勾选目标
+
+### Ping
+
+- 开始监控
+- 停止监控
+- Ping 选项设置
+
+### 工具
+
+- 查询勾选目标的 MAC 地址
+
+### 帮助
+
+- 关于 PingInfo
+- 项目 GitHub 地址、作者和联系方式
+
+## 构建 Debian 包
 
 ```bash
-./build.sh 1.5.0
-sudo dpkg -i dist/pinginfo_1.5.0_all.deb
+bash build.sh 1.5.1
 ```
 
-## 技术栈
+构建结果：
+
+```text
+dist/pinginfo_1.5.1_all.deb
+```
+
+构建脚本会同步校验应用版本与请求版本，并移除安装包中的 `.pyc` 和 `__pycache__`。
+
+详见 [`packaging/README.md`](packaging/README.md)。
+
+## 项目结构
+
+```text
+pinginfo/
+├── src/
+│   ├── main.py           # 应用入口
+│   ├── main_window.py    # 主窗口、线程和交互逻辑
+│   ├── table_model.py    # QAbstractTableModel 与排序代理模型
+│   ├── dialogs.py        # 添加、设置、详情、MAC、导出对话框
+│   ├── data_models.py    # 目标统计数据模型
+│   ├── ping_core.py      # ICMP/TCP Ping、地址解析
+│   ├── arp_lookup.py     # MAC 地址查询
+│   └── exporters.py      # TXT/CSV/HTML/XML 导出
+├── packaging/            # Debian control、desktop、图标与说明
+├── dist/                 # 最近两个 Debian 安装包
+├── build.sh              # Debian 构建脚本
+├── requirements.txt      # Python 依赖
+├── CHANGELOG.md          # 版本变更记录
+└── README.md
+```
+
+## 技术实现
+
 - Python 3.8+
-- PyQt5 (GUI)
-- 系统命令 ping (ICMP)
-- socket (TCP Ping)
-- dpkg-deb (deb 打包)
+- PyQt5
+- `QTableView + QAbstractTableModel + QSortFilterProxyModel`
+- 系统 `ping` 命令执行 ICMP Ping
+- Python socket 执行 TCP Ping
+- 后台 QThread 与受控线程池执行 DNS/MAC 任务
+- `dpkg-deb` 构建架构无关的 Debian 包
 
-## 修改记录
+## 已知限制
 
-详见 [CHANGELOG.md](CHANGELOG.md)。
+- MAC 地址通常仅能从同一二层网络或本机邻居缓存中获取。
+- 系统 ICMP Ping 参数主要按 Linux 环境适配；Debian 安装包为主要发布目标。
+- 监控使用开始时的勾选目标快照，运行期间修改勾选范围需要重新开始后生效。
+- 为保证大列表下的稳定性，不支持拖动整行改变目标顺序，可使用表头排序查看不同顺序。
 
-## 作者与联系方式
+## 版本与安装包
+
+`dist` 仅保留最近两个版本：
+
+- `pinginfo_1.5.0_all.deb`
+- `pinginfo_1.5.1_all.deb`
+
+详细变更请查看 [`CHANGELOG.md`](CHANGELOG.md)。
+
+## 作者与联系
 
 - 作者：ziyiliunian
 - 邮箱：316878142@qq.com
-- 项目地址：https://github.com/ziyiliunian/pinginfo
+- GitHub：https://github.com/ziyiliunian/pinginfo
+- Issues：https://github.com/ziyiliunian/pinginfo/issues
 
-欢迎通过邮件或 GitHub Issues 交流反馈问题与建议。
+欢迎通过邮件或 GitHub Issues 反馈问题与建议。

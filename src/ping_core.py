@@ -257,12 +257,21 @@ def tcp_ping(host: str, port: int, timeout: int = 3) -> PingResult:
                 pass
 
 
-def resolve_hostname(ip: str) -> str:
-    """尝试反向解析主机名"""
+def resolve_hostname(ip: str, timeout: float = 2.0) -> str:
+    """在可终止子进程中反向解析主机名，避免系统解析器无限阻塞。"""
+    script = (
+        "import socket,sys; "
+        "print(socket.gethostbyaddr(sys.argv[1])[0])"
+    )
     try:
-        result = socket.gethostbyaddr(ip)
-        return result[0]
-    except (socket.herror, socket.gaierror):
+        result = subprocess.run(
+            [sys.executable, '-c', script, ip],
+            capture_output=True, text=True, timeout=max(0.1, timeout),
+            check=False,
+        )
+        hostname = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+        return hostname or ip
+    except (subprocess.TimeoutExpired, OSError):
         return ip
 
 
