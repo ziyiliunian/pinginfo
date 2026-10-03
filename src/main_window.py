@@ -12,8 +12,9 @@ from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QSize, QEvent, QRect, QTimer,
                           QItemSelectionModel)
 from PyQt5.QtGui import QColor, QDragEnterEvent, QDropEvent, QKeySequence
 from concurrent.futures import (FIRST_COMPLETED, ThreadPoolExecutor, wait)
+from . import __version__
 from .data_models import TargetStats
-from .ping_core import (ping_batch, resolve_to_ipv4, resolve_hostname,
+from .ping_core import (PingResult, ping_target, resolve_to_ipv4,
                         is_ip_address, expand_ip_range, normalize_host,
                         icmp_ping, parse_host_port)
 from .arp_lookup import get_mac_address
@@ -24,10 +25,18 @@ from .table_model import COLUMNS, TARGET_ROLE, TargetSortProxyModel, TargetTable
 
 
 class PingWorker(QThread):
+    """循环监控启动时的目标快照，并在工作线程池中执行网络探测。
+
+    ``QThread`` 只负责调度；真正的 ICMP/TCP 请求交给一个在整个监控周期内
+    复用的 ``ThreadPoolExecutor``。复用线程池可避免千目标场景每轮创建、销毁
+    数百个线程。安全上限用于防止同时启动过多系统 ``ping`` 子进程拖慢桌面。
+    """
+
     batch_complete = pyqtSignal(list)
     log_message = pyqtSignal(str)
+    MAX_PARALLEL_WORKERS = 128
 
-    def __init__(self, targets, interval=1, max_workers=200, timeout=3,
+    def __init__(self, targets, interval=1, max_workers=64, timeout=3,
                  packet_size=56, ttl=0):
         super().__init__()
         self.targets = targets
@@ -39,32 +48,54 @@ class PingWorker(QThread):
         self._stop = False
 
     def run(self):
+        """持续执行监控；停止时取消尚未开始的任务并等待在途请求自然超时。"""
         self.log_message.emit("开始监控...")
-        while not self._stop:
-            # targets 是点击“开始监控”时已勾选目标的稳定快照。
-            active = [target for target in self.targets if target.is_running]
-            if active:
-                results = []
-                # 按并发上限分波执行，每波后检查停止请求
-                chunk_size = max(1, self.max_workers)
-                for start in range(0, len(active), chunk_size):
+        worker_count = min(
+            max(1, self.max_workers), self.MAX_PARALLEL_WORKERS,
+            max(1, len(self.targets)),
+        )
+        executor = ThreadPoolExecutor(max_workers=worker_count)
+        try:
+            while not self._stop:
+                active = [target for target in self.targets if target.is_running]
+                future_to_target = {
+                    executor.submit(
+                        ping_target, target, self.timeout,
+                        self.packet_size, self.ttl): target
+                    for target in active
+                }
+                pending = set(future_to_target)
+                result_buffer = []
+                # 不等待 1000 个目标全部完成：每收集到一批结果就刷新一次界面，
+                # 让不可达目标较多时也能持续显示已完成的目标，而不是长时间无反馈。
+                emit_threshold = max(16, worker_count)
+                while pending and not self._stop:
+                    done, pending = wait(
+                        pending, timeout=0.1, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        target = future_to_target[future]
+                        try:
+                            result = future.result()
+                        except Exception as exc:
+                            result = PingResult(success=False, error=str(exc))
+                        result_buffer.append((target, result))
+                    if len(result_buffer) >= emit_threshold and not self._stop:
+                        self.batch_complete.emit(result_buffer)
+                        result_buffer = []
+                for future in pending:
+                    future.cancel()
+                if result_buffer and not self._stop:
+                    self.batch_complete.emit(result_buffer)
+                for _ in range(max(0, self.interval * 10)):
                     if self._stop:
                         break
-                    results.extend(ping_batch(
-                        active[start:start + chunk_size],
-                        max_workers=self.max_workers,
-                        timeout=self.timeout,
-                        packet_size=self.packet_size,
-                        ttl=self.ttl))
-                if results and not self._stop:
-                    self.batch_complete.emit(results)
-            for _ in range(self.interval):
-                if self._stop:
-                    break
-                self.msleep(1000)
+                    self.msleep(100)
+        finally:
+            executor.shutdown(wait=True)
         self.log_message.emit("监控已停止")
 
     def stop(self):
+        """线程安全地请求结束监控循环。"""
         self._stop = True
 
 
@@ -85,9 +116,7 @@ class ResolveWorker(QThread):
 
     @staticmethod
     def _resolve_target(target):
-        if is_ip_address(target.address):
-            hostname = resolve_hostname(target.address)
-            return target, target.address, ("" if hostname == target.address else hostname)
+        """解析域名的 IPv4 地址；IP 目标无需重复启动解析子进程。"""
         return target, resolve_to_ipv4(target.address), target.address
 
     def run(self):
@@ -323,7 +352,8 @@ class TargetTableView(QTableView):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PingInfo - 批量 Ping 与实时监控工具")
+        self.setWindowTitle(
+            f"PingInfo v{__version__} - 批量 Ping 与实时监控工具")
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setMinimumSize(1200, 600)
         self.resize(1400, 700)
@@ -342,7 +372,9 @@ class MainWindow(QMainWindow):
                 app._pinginfo_windows = windows
             windows.append(self)
         self.ping_interval = 1
-        self.max_workers = 500
+        # 桌面端默认并发控制在 64；过高并发会同时创建大量 ping 子进程，
+        # 在千目标场景中反而造成调度竞争、界面卡顿和停止延迟。
+        self.max_workers = 64
         self.ping_timeout = 3
         self.packet_size = 56
         self.icmp_ttl = 0
@@ -525,11 +557,13 @@ class MainWindow(QMainWindow):
         self._resolve_targets_async(added)
 
     def _resolve_targets_async(self, targets):
-        """后台解析域名 IP，并反向解析 IP 目标的主机名。"""
-        if not targets:
+        """仅后台解析域名；纯 IP 列表直接跳过，避免大批量无效任务。"""
+        domains = [target for target in targets
+                   if not is_ip_address(target.address)]
+        if not domains:
             return
-        self.status_label.setText("正在解析目标地址和主机名...")
-        worker = ResolveWorker(targets)
+        self.status_label.setText(f"正在解析 {len(domains)} 个域名地址...")
+        worker = ResolveWorker(domains)
         worker.resolve_done.connect(self._on_resolve_done)
         self._start_bg_worker(worker)
 

@@ -11,7 +11,13 @@ from typing import Optional, List
 
 @dataclass
 class TargetStats:
-    """单个 ping 目标的统计数据"""
+    """单个监控目标的配置、累计统计和最近状态。
+
+    ``selected`` 表示主表“监控”复选框，不是 Qt 的视觉高亮；
+    ``is_running`` 表示目标是否启用。二者同时满足时，目标才会进入新一轮监控。
+    RTT 平均值使用 ``sum_rtt / rtt_sample_count`` 增量计算，避免每次刷新遍历历史。
+    ``rtt_history`` 只保留最近 20 次结果，供详情窗口展示而不无限增长内存。
+    """
     address: str
     hostname: str = ""
     ping_mode: str = "ICMP"          # "ICMP" 或 "TCP"

@@ -42,50 +42,87 @@ class TargetTableModel(QAbstractTableModel):
 
     @staticmethod
     def _display_value(target, row, column):
-        values = (
-            "",
-            str(target.sequence_number or row + 1),
-            target.address,
-            f"TCP:{target.tcp_port}" if target.ping_mode == "TCP" else target.ping_mode,
-            target.status_text,
-            f"{target.last_rtt:.2f}" if target.last_rtt is not None else "-",
-            f"{target.loss_rate:.1f}",
-            str(target.success_count),
-            str(target.fail_count),
-            f"{target.avg_rtt:.2f}" if target.avg_rtt is not None else "-",
-            f"{target.min_rtt:.2f}" if target.min_rtt is not None else "-",
-            f"{target.max_rtt:.2f}" if target.max_rtt is not None else "-",
-            str(target.last_ttl) if target.last_ttl is not None else "-",
-            target.last_success_time or "-",
-            target.last_fail_time or "-",
-            target.resolved_ip or "-",
-            target.last_error or "",
-        )
-        return values[column]
+        """按需计算单个单元格文本。
+
+        旧实现每读取一个单元格都会格式化全部 17 列；1000 行重绘时会产生
+        大量无用字符串。逐列返回可把模型读取成本限制在当前可见单元格。
+        """
+        if column == 0:
+            return ""
+        if column == 1:
+            return str(target.sequence_number or row + 1)
+        if column == 2:
+            return target.address
+        if column == 3:
+            return (f"TCP:{target.tcp_port}"
+                    if target.ping_mode == "TCP" else target.ping_mode)
+        if column == 4:
+            return target.status_text
+        if column == 5:
+            return f"{target.last_rtt:.2f}" if target.last_rtt is not None else "-"
+        if column == 6:
+            return f"{target.loss_rate:.1f}"
+        if column == 7:
+            return str(target.success_count)
+        if column == 8:
+            return str(target.fail_count)
+        if column == 9:
+            return f"{target.avg_rtt:.2f}" if target.avg_rtt is not None else "-"
+        if column == 10:
+            return f"{target.min_rtt:.2f}" if target.min_rtt is not None else "-"
+        if column == 11:
+            return f"{target.max_rtt:.2f}" if target.max_rtt is not None else "-"
+        if column == 12:
+            return str(target.last_ttl) if target.last_ttl is not None else "-"
+        if column == 13:
+            return target.last_success_time or "-"
+        if column == 14:
+            return target.last_fail_time or "-"
+        if column == 15:
+            return target.resolved_ip or "-"
+        if column == 16:
+            return target.last_error or ""
+        return None
 
     @staticmethod
     def _sort_value(target, row, column):
-        values = (
-            target.selected,
-            target.sequence_number or row + 1,
-            target.address.casefold(),
-            (f"TCP:{target.tcp_port}" if target.ping_mode == "TCP"
-             else target.ping_mode).casefold(),
-            target.status_text,
-            target.last_rtt,
-            target.loss_rate,
-            target.success_count,
-            target.fail_count,
-            target.avg_rtt,
-            target.min_rtt,
-            target.max_rtt,
-            target.last_ttl,
-            target.last_success_time,
-            target.last_fail_time,
-            target.resolved_ip.casefold() if target.resolved_ip else None,
-            target.last_error.casefold() if target.last_error else None,
-        )
-        return values[column]
+        """返回当前列的原始排序值，避免比较时构造整行元组。"""
+        if column == 0:
+            return target.selected
+        if column == 1:
+            return target.sequence_number or row + 1
+        if column == 2:
+            return target.address.casefold()
+        if column == 3:
+            return (f"TCP:{target.tcp_port}" if target.ping_mode == "TCP"
+                    else target.ping_mode).casefold()
+        if column == 4:
+            return target.status_text
+        if column == 5:
+            return target.last_rtt
+        if column == 6:
+            return target.loss_rate
+        if column == 7:
+            return target.success_count
+        if column == 8:
+            return target.fail_count
+        if column == 9:
+            return target.avg_rtt
+        if column == 10:
+            return target.min_rtt
+        if column == 11:
+            return target.max_rtt
+        if column == 12:
+            return target.last_ttl
+        if column == 13:
+            return target.last_success_time
+        if column == 14:
+            return target.last_fail_time
+        if column == 15:
+            return target.resolved_ip.casefold() if target.resolved_ip else None
+        if column == 16:
+            return target.last_error.casefold() if target.last_error else None
+        return None
 
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid():

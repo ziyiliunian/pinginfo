@@ -290,7 +290,7 @@ class MacResultsDialog(QDialog):
 
 class SettingsDialog(QDialog):
     """Ping 设置对话框"""
-    def __init__(self, parent=None, interval=1, max_workers=500, timeout=3,
+    def __init__(self, parent=None, interval=1, max_workers=64, timeout=3,
                  packet_size=56, ttl=0):
         super().__init__(parent)
         self.setWindowTitle("Ping 选项设置")
@@ -307,8 +307,10 @@ class SettingsDialog(QDialog):
         layout.addRow("Ping 间隔:", self.interval_spin)
 
         self.workers_spin = QSpinBox()
-        self.workers_spin.setRange(1, 2000)
-        self.workers_spin.setValue(max_workers)
+        self.workers_spin.setRange(1, 128)
+        self.workers_spin.setValue(min(max_workers, 128))
+        self.workers_spin.setToolTip(
+            "桌面环境建议 32～64；过高并发会同时创建大量系统 ping 进程。")
         layout.addRow("并发线程数:", self.workers_spin)
 
         self.timeout_spin = QSpinBox()

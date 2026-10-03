@@ -2,7 +2,8 @@
 
 PingInfo 是基于 Python 3 与 PyQt5 开发的桌面网络监控工具，支持批量 ICMP/TCP Ping、IPv4/IPv6、实时统计、目标详情、MAC 查询和多格式导出。
 
-- 当前版本：`1.5.1`
+- 当前版本：`1.6.0`
+- 主窗口标题显示：`PingInfo v1.6.0 - 批量 Ping 与实时监控工具`
 - 项目地址：https://github.com/ziyiliunian/pinginfo
 - 支持平台：Debian/Ubuntu 系 Linux 桌面；源码可在安装 PyQt5 的兼容环境运行
 
@@ -33,6 +34,7 @@ PingInfo 是基于 Python 3 与 PyQt5 开发的桌面网络监控工具，支持
 - **TCP Ping**：检测指定 TCP 端口连接状态
 - 支持 IPv4、IPv6、域名解析和真实响应地址识别
 - 可设置监控间隔、最大并发数、超时、数据包大小和 TTL
+- 默认并发为 64，配置上限为 128；千目标场景按完成批次增量刷新结果，避免整轮等待
 - 开始监控时只使用当前“监控”列中已勾选且已启用的目标
 - 未勾选有效目标时不会启动监控
 - 当前监控使用启动时的稳定目标快照；修改勾选范围后，停止并重新开始即可应用
@@ -92,7 +94,7 @@ PingInfo 是基于 Python 3 与 PyQt5 开发的桌面网络监控工具，支持
 ### DNS 与 MAC 查询
 
 - 域名目标在后台解析 IPv4 地址
-- IP 目标在后台尝试反向解析主机名
+- 域名目标在后台解析 IPv4；纯 IP 目标不会自动启动反向 DNS 任务，以避免大批量添加时产生无意义的进程开销
 - DNS 操作具有超时，关闭窗口时不会无限阻塞
 - 已删除目标不会接收过期 DNS 结果
 - “工具 > 查询 MAC 地址”只查询当前已勾选目标
@@ -121,7 +123,7 @@ PingInfo 是基于 Python 3 与 PyQt5 开发的桌面网络监控工具，支持
 ### Debian/Ubuntu 安装包
 
 ```bash
-sudo dpkg -i dist/pinginfo_1.5.1_all.deb
+sudo dpkg -i dist/pinginfo_1.6.0_all.deb
 sudo apt-get install -f
 ```
 
@@ -223,13 +225,13 @@ python3 -m src.main
 ## 构建 Debian 包
 
 ```bash
-bash build.sh 1.5.1
+bash build.sh 1.6.0
 ```
 
 构建结果：
 
 ```text
-dist/pinginfo_1.5.1_all.deb
+dist/pinginfo_1.6.0_all.deb
 ```
 
 构建脚本会同步校验应用版本与请求版本，并移除安装包中的 `.pyc` 和 `__pycache__`。
@@ -278,8 +280,8 @@ pinginfo/
 
 `dist` 仅保留最近两个版本：
 
-- `pinginfo_1.5.0_all.deb`
 - `pinginfo_1.5.1_all.deb`
+- `pinginfo_1.6.0_all.deb`
 
 详细变更请查看 [`CHANGELOG.md`](CHANGELOG.md)。
 
